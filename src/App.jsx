@@ -334,6 +334,7 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
   const holdTicksRef = useRef(0);
   const skipPersistRef = useRef(true);
   const showToastRef = useRef(showToast);
+  const lastHapticRef = useRef(0);
 
   useEffect(() => {
     showToastRef.current = showToast;
@@ -374,7 +375,19 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
     });
   };
 
-  const applyQtyChange = (index, direction, step = 1) => {
+  const triggerHaptic = (mode = 'repeat') => {
+    if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return;
+
+    const now = Date.now();
+    const cooldown = mode === 'press' ? 0 : 90;
+    if (now - lastHapticRef.current < cooldown) return;
+
+    lastHapticRef.current = now;
+    navigator.vibrate(mode === 'press' ? [28, 18, 22] : 16);
+  };
+
+  const applyQtyChange = (index, direction, step = 1, hapticMode = 'repeat') => {
+    triggerHaptic(hapticMode);
     updateSuppliesState((current) => current.map((item, itemIndex) => {
       if (itemIndex !== index) return item;
 
@@ -407,13 +420,13 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
 
   const startAdjustPress = (index, direction) => {
     stopAdjustPress();
-    applyQtyChange(index, direction, 1);
+    applyQtyChange(index, direction, 1, 'press');
     holdTicksRef.current = 0;
 
     holdTimeoutRef.current = setTimeout(() => {
       holdIntervalRef.current = setInterval(() => {
         holdTicksRef.current += 1;
-        applyQtyChange(index, direction, getHoldStep(holdTicksRef.current));
+        applyQtyChange(index, direction, getHoldStep(holdTicksRef.current), 'repeat');
       }, 120);
     }, 300);
   };
@@ -520,7 +533,7 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
                   item.quantity > 0 ? 'text-[#FF1744]' : (isDark ? 'text-gray-200' : 'text-gray-700')
                 }`}>{item.name}</span>
               </div>
-              <div className={`flex items-center gap-1 rounded-xl p-1 border ${isDark ? 'bg-black/40 border-white/5' : 'bg-gray-100 border-gray-200'}`}>
+              <div className={`flex items-center gap-2 rounded-2xl px-2 py-1.5 border ${isDark ? 'bg-black/40 border-white/5' : 'bg-gray-100 border-gray-200'}`}>
                 <button
                   type="button"
                   onPointerDown={(e) => {
@@ -532,11 +545,11 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
                   onPointerCancel={stopAdjustPress}
                   onContextMenu={(e) => e.preventDefault()}
                   disabled={item.quantity === 0}
-                  className={`p-2 rounded-lg transition-colors disabled:opacity-30 disabled:bg-transparent select-none touch-none ${isDark ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200'}`}
+                  className={`h-11 w-11 flex items-center justify-center rounded-xl transition-colors disabled:opacity-30 disabled:bg-transparent select-none touch-none ${isDark ? 'bg-white/5 text-gray-300 hover:text-white hover:bg-white/10' : 'bg-white text-gray-700 hover:text-gray-900 hover:bg-gray-200 shadow-sm'}`}
                 >
-                  <Minus size={18} strokeWidth={3} />
+                  <Minus size={20} strokeWidth={3.25} />
                 </button>
-                <span className={`w-8 text-center font-black text-lg tabular-nums ${item.quantity > 0 ? (isDark ? 'text-white' : 'text-gray-900') : 'text-gray-500'}`}>{item.quantity}</span>
+                <span className={`w-10 text-center font-black text-xl tabular-nums ${item.quantity > 0 ? (isDark ? 'text-white' : 'text-gray-900') : 'text-gray-500'}`}>{item.quantity}</span>
                 <button
                   type="button"
                   onPointerDown={(e) => {
@@ -547,9 +560,9 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
                   onPointerLeave={stopAdjustPress}
                   onPointerCancel={stopAdjustPress}
                   onContextMenu={(e) => e.preventDefault()}
-                  className="p-2 text-[#FF1744] hover:bg-[#FF1744]/20 rounded-lg transition-colors select-none touch-none"
+                  className="h-11 w-11 flex items-center justify-center rounded-xl bg-[#FF1744]/12 text-[#FF1744] hover:bg-[#FF1744]/20 transition-colors select-none touch-none"
                 >
-                  <Plus size={18} strokeWidth={3} />
+                  <Plus size={20} strokeWidth={3.25} />
                 </button>
               </div>
               {isAdmin && (

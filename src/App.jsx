@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { db } from './firebase';
 import { collection, doc, onSnapshot, updateDoc, addDoc, deleteDoc } from 'firebase/firestore';
 import { Share2, ArrowLeft, Plus, Minus, LogOut, Trash2, Menu, X, Store, PackageOpen, ChevronRight, ShoppingBag, Send, Sun, Moon, CheckCircle2 } from 'lucide-react';
@@ -191,7 +191,11 @@ function HomeScreen({ storeId, isAdmin, onVendorClick, isDark, showToast }) {
 
   const addVendor = async () => {
     if (!newName.trim()) return;
-    await addDoc(collection(db, 'stores', storeId, 'vendors'), { name: newName.trim(), supplies: [] });
+    await addDoc(collection(db, 'stores', storeId, 'vendors'), {
+      name: newName.trim(),
+      supplies: [],
+      includeDeliveryWindow: true
+    });
     setNewName(''); 
     setShowAdd(false);
     showToast("Vendor added successfully!");
@@ -199,7 +203,7 @@ function HomeScreen({ storeId, isAdmin, onVendorClick, isDark, showToast }) {
 
   const confirmDelete = async () => {
     if (vendorToDelete) {
-      await deleteDoc(doc(db, 'stores', storeId, 'vendors', vendorToDelete));
+      await deleteDoc(doc(db, 'stores', storeId, 'vendors', vendorToDelete.id));
       setVendorToDelete(null);
       showToast("Vendor deleted");
     }
@@ -207,7 +211,9 @@ function HomeScreen({ storeId, isAdmin, onVendorClick, isDark, showToast }) {
 
   const deleteVendor = async (e, id) => {
     e.stopPropagation();
-    setVendorToDelete(id);
+    const vendor = vendors.find((entry) => entry.id === id);
+    if (!vendor) return;
+    setVendorToDelete({ id, name: vendor.name });
   };
 
   const inviteStaff = () => {
@@ -303,18 +309,15 @@ function HomeScreen({ storeId, isAdmin, onVendorClick, isDark, showToast }) {
       )}
 
       {/* DELETE VENDOR MODAL */}
-      {vendorToDelete && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
-          <div className={`p-6 rounded-[2rem] w-full max-w-xs space-y-5 border shadow-2xl animate-in zoom-in-95 ${isDark ? 'bg-[#121212] border-white/10' : 'bg-white border-gray-200'}`}>
-            <h3 className={`text-xl font-bold text-center ${isDark ? 'text-white' : 'text-gray-900'}`}>Delete Vendor?</h3>
-            <p className="text-center text-gray-500 text-sm">This action cannot be undone. All supplies for this vendor will be lost.</p>
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setVendorToDelete(null)} className={`flex-1 py-3 rounded-xl font-bold transition-all ${isDark ? 'bg-white/5 text-white hover:bg-white/10' : 'bg-gray-100 text-gray-900 hover:bg-gray-200'}`}>Cancel</button>
-              <button onClick={confirmDelete} className="flex-1 py-3 rounded-xl font-bold bg-red-500 text-white hover:bg-red-600 transition-all shadow-lg shadow-red-500/30">Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeleteConfirmModal
+        confirmTarget={vendorToDelete}
+        isDark={isDark}
+        title="Delete Vendor?"
+        description="This action cannot be undone. All supplies for this vendor will be lost."
+        confirmLabel="Delete Vendor"
+        onClose={() => setVendorToDelete(null)}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }
@@ -324,27 +327,111 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
   const [supplies, setSupplies] = useState(vendor.supplies || []);
   const [showAdd, setShowAdd] = useState(false);
   const [newItem, setNewItem] = useState('');
+  const [itemToDelete, setItemToDelete] = useState(null);
+  const [includeDeliveryWindow, setIncludeDeliveryWindow] = useState(vendor.includeDeliveryWindow !== false);
+  const holdTimeoutRef = useRef(null);
+  const holdIntervalRef = useRef(null);
+  const holdTicksRef = useRef(0);
+  const skipPersistRef = useRef(true);
+  const showToastRef = useRef(showToast);
 
-  const saveSupplies = async (newSupplies) => {
-    setSupplies(newSupplies);
-    await updateDoc(doc(db, 'stores', storeId, 'vendors', vendor.id), { supplies: newSupplies });
+  useEffect(() => {
+    showToastRef.current = showToast;
+  }, [showToast]);
+
+  useEffect(() => {
+    setSupplies(vendor.supplies || []);
+    setIncludeDeliveryWindow(vendor.includeDeliveryWindow !== false);
+    setItemToDelete(null);
+    skipPersistRef.current = true;
+    stopAdjustPress();
+  }, [vendor]);
+
+  useEffect(() => {
+    if (skipPersistRef.current) {
+      skipPersistRef.current = false;
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      updateDoc(doc(db, 'stores', storeId, 'vendors', vendor.id), {
+        supplies,
+        includeDeliveryWindow
+      }).catch(() => {
+        showToastRef.current("Couldn't save changes");
+      });
+    }, 250);
+
+    return () => clearTimeout(timeoutId);
+  }, [includeDeliveryWindow, storeId, supplies, vendor.id]);
+
+  useEffect(() => () => stopAdjustPress(), []);
+
+  const updateSuppliesState = (updater) => {
+    setSupplies((current) => {
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return next;
+    });
   };
 
-  const updateQty = (index, change) => {
-    const updated = [...supplies];
-    updated[index].quantity = Math.max(0, updated[index].quantity + change);
-    saveSupplies(updated);
+  const applyQtyChange = (index, direction, step = 1) => {
+    updateSuppliesState((current) => current.map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+
+      return {
+        ...item,
+        quantity: Math.max(0, item.quantity + (direction * step))
+      };
+    }));
   };
 
-  const deleteItem = (idx) => {
-    const updated = supplies.filter((_, i) => i !== idx);
-    saveSupplies(updated);
+  const getHoldStep = (ticks) => {
+    if (ticks > 18) return 10;
+    if (ticks > 8) return 5;
+    return 1;
+  };
+
+  const stopAdjustPress = () => {
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+
+    if (holdIntervalRef.current) {
+      clearInterval(holdIntervalRef.current);
+      holdIntervalRef.current = null;
+    }
+
+    holdTicksRef.current = 0;
+  };
+
+  const startAdjustPress = (index, direction) => {
+    stopAdjustPress();
+    applyQtyChange(index, direction, 1);
+    holdTicksRef.current = 0;
+
+    holdTimeoutRef.current = setTimeout(() => {
+      holdIntervalRef.current = setInterval(() => {
+        holdTicksRef.current += 1;
+        applyQtyChange(index, direction, getHoldStep(holdTicksRef.current));
+      }, 120);
+    }, 300);
+  };
+
+  const confirmDeleteItem = async () => {
+    if (!itemToDelete) return;
+
+    setSupplies((current) => current.filter((_, index) => index !== itemToDelete.index));
+    setItemToDelete(null);
     showToast("Item removed");
   };
 
   const addItem = () => {
     if (!newItem.trim()) return;
-    saveSupplies([...supplies, { id: Date.now().toString(), name: newItem.trim(), quantity: 0 }]);
+    updateSuppliesState((current) => [
+      ...current,
+      { id: Date.now().toString(), name: newItem.trim(), quantity: 0 }
+    ]);
     setNewItem(''); 
     setShowAdd(false);
     showToast("Item added!");
@@ -358,7 +445,10 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
 
     let text = `*RED LANTERN RESTAURANT*\n`;
     text += `Date: ${new Date().toLocaleDateString()}\n`;
-    text += `_Order must get delivered by 9:30am to 10:00am_\n\n`;
+    if (includeDeliveryWindow) {
+      text += `_Order must get delivered by 9:30am to 10:00am_\n`;
+    }
+    text += `\n`;
     text += `*VENDOR: ${vendor.name}*\n----------------\n`;
     
     activeItems.forEach(item => {
@@ -391,6 +481,19 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
         </div>
       </div>
 
+      <label className={`mb-5 flex items-start gap-3 rounded-2xl border p-4 transition-colors ${isDark ? 'bg-[#121212] border-white/5' : 'bg-white border-gray-200 shadow-sm'}`}>
+        <input
+          type="checkbox"
+          checked={includeDeliveryWindow}
+          onChange={(e) => setIncludeDeliveryWindow(e.target.checked)}
+          className="mt-1 h-5 w-5 accent-[#FF1744]"
+        />
+        <div>
+          <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Include delivery time note</p>
+          <p className="text-sm text-gray-500">When checked, the WhatsApp order includes “Order must get delivered by 9:30am to 10:00am”.</p>
+        </div>
+      </label>
+
       <div className="space-y-3 flex-1">
         {supplies.length === 0 ? (
           <div className="text-center py-16 px-4">
@@ -418,12 +521,39 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
                 }`}>{item.name}</span>
               </div>
               <div className={`flex items-center gap-1 rounded-xl p-1 border ${isDark ? 'bg-black/40 border-white/5' : 'bg-gray-100 border-gray-200'}`}>
-                <button onClick={() => updateQty(idx, -1)} disabled={item.quantity === 0} className={`p-2 rounded-lg transition-colors disabled:opacity-30 disabled:bg-transparent ${isDark ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200'}`}><Minus size={18} strokeWidth={3} /></button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture?.(e.pointerId);
+                    if (item.quantity > 0) startAdjustPress(idx, -1);
+                  }}
+                  onPointerUp={stopAdjustPress}
+                  onPointerLeave={stopAdjustPress}
+                  onPointerCancel={stopAdjustPress}
+                  onContextMenu={(e) => e.preventDefault()}
+                  disabled={item.quantity === 0}
+                  className={`p-2 rounded-lg transition-colors disabled:opacity-30 disabled:bg-transparent select-none touch-none ${isDark ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200'}`}
+                >
+                  <Minus size={18} strokeWidth={3} />
+                </button>
                 <span className={`w-8 text-center font-black text-lg tabular-nums ${item.quantity > 0 ? (isDark ? 'text-white' : 'text-gray-900') : 'text-gray-500'}`}>{item.quantity}</span>
-                <button onClick={() => updateQty(idx, 1)} className="p-2 text-[#FF1744] hover:bg-[#FF1744]/20 rounded-lg transition-colors"><Plus size={18} strokeWidth={3} /></button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture?.(e.pointerId);
+                    startAdjustPress(idx, 1);
+                  }}
+                  onPointerUp={stopAdjustPress}
+                  onPointerLeave={stopAdjustPress}
+                  onPointerCancel={stopAdjustPress}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="p-2 text-[#FF1744] hover:bg-[#FF1744]/20 rounded-lg transition-colors select-none touch-none"
+                >
+                  <Plus size={18} strokeWidth={3} />
+                </button>
               </div>
               {isAdmin && (
-                <button onClick={() => deleteItem(idx)} className={`ml-2 p-2.5 rounded-xl transition-colors ${isDark ? 'text-gray-600 hover:bg-red-500/10 hover:text-red-500' : 'text-gray-400 hover:bg-red-50 hover:text-red-600'}`}>
+                <button onClick={() => setItemToDelete({ index: idx, name: item.name })} className={`ml-2 p-2.5 rounded-xl transition-colors ${isDark ? 'text-gray-600 hover:bg-red-500/10 hover:text-red-500' : 'text-gray-400 hover:bg-red-50 hover:text-red-600'}`}>
                   <Trash2 size={18} />
                 </button>
               )}
@@ -466,6 +596,62 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
           </div>
         </div>
       )}
+
+      <DeleteConfirmModal
+        confirmTarget={itemToDelete}
+        isDark={isDark}
+        title="Delete Item?"
+        description="Type 0000 to confirm removing this item from the vendor list."
+        confirmLabel="Delete Item"
+        onClose={() => setItemToDelete(null)}
+        onConfirm={confirmDeleteItem}
+      />
+    </div>
+  );
+}
+
+function DeleteConfirmModal({ confirmTarget, isDark, title, description, confirmLabel, onClose, onConfirm }) {
+  const [confirmationCode, setConfirmationCode] = useState('');
+
+  useEffect(() => {
+    setConfirmationCode('');
+  }, [confirmTarget]);
+
+  if (!confirmTarget) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+      <div className={`p-6 rounded-[2rem] w-full max-w-sm space-y-5 border shadow-2xl animate-in zoom-in-95 ${isDark ? 'bg-[#121212] border-white/10' : 'bg-white border-gray-200'}`}>
+        <h3 className={`text-xl font-bold text-center ${isDark ? 'text-white' : 'text-gray-900'}`}>{title}</h3>
+        <div className="space-y-2 text-center">
+          <p className="text-sm text-gray-500">{description}</p>
+          <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+            Type <span className="text-[#FF1744] font-mono">0000</span> to delete {confirmTarget.name ? `"${confirmTarget.name}"` : 'this item'}.
+          </p>
+        </div>
+        <input
+          autoFocus
+          value={confirmationCode}
+          onChange={(e) => setConfirmationCode(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && confirmationCode === '0000') {
+              onConfirm();
+            }
+          }}
+          placeholder='Type 0000 to confirm'
+          className={`w-full border p-4 rounded-2xl focus:border-[#FF1744] focus:ring-1 focus:ring-[#FF1744] focus:outline-none transition-all text-center font-bold tracking-[0.3em] ${isDark ? 'bg-black/50 border-white/10 text-white placeholder-gray-600' : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-400'}`}
+        />
+        <div className="flex gap-3 pt-1">
+          <button onClick={onClose} className={`flex-1 py-3 rounded-xl font-bold transition-all ${isDark ? 'bg-white/5 text-white hover:bg-white/10' : 'bg-gray-100 text-gray-900 hover:bg-gray-200'}`}>Cancel</button>
+          <button
+            onClick={onConfirm}
+            disabled={confirmationCode !== '0000'}
+            className="flex-1 py-3 rounded-xl font-bold bg-red-500 text-white hover:bg-red-600 transition-all shadow-lg shadow-red-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

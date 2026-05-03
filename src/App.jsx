@@ -1,7 +1,51 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db } from './firebase';
-import { collection, doc, onSnapshot, updateDoc, addDoc, deleteDoc } from 'firebase/firestore';
-import { Share2, ArrowLeft, Plus, Minus, LogOut, Trash2, Menu, X, Store, PackageOpen, ChevronRight, ShoppingBag, Send, Sun, Moon, CheckCircle2 } from 'lucide-react';
+import { collection, doc, onSnapshot, updateDoc, addDoc, deleteDoc, setDoc } from 'firebase/firestore';
+import { Share2, ArrowLeft, Plus, Minus, LogOut, Trash2, Menu, X, Store, PackageOpen, ChevronRight, ShoppingBag, Send, Sun, Moon, CheckCircle2, RefreshCw } from 'lucide-react';
+
+const DEFAULT_ORDER_MESSAGE_ID = 'delivery-window-default';
+const DEFAULT_ORDER_MESSAGES = [
+  { id: DEFAULT_ORDER_MESSAGE_ID, text: 'Order must get delivered by 9:30am to 10:00am' }
+];
+
+const normalizeOrderMessages = (messages) => {
+  const normalized = Array.isArray(messages)
+    ? messages
+        .map((message) => ({
+          id: typeof message?.id === 'string' && message.id.trim() ? message.id.trim() : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          text: typeof message?.text === 'string' ? message.text.trim() : ''
+        }))
+        .filter((message) => message.text)
+    : [];
+
+  const unique = [];
+  const seenIds = new Set();
+
+  normalized.forEach((message) => {
+    if (seenIds.has(message.id)) return;
+    seenIds.add(message.id);
+    unique.push(message);
+  });
+
+  return unique.length > 0 ? unique : DEFAULT_ORDER_MESSAGES;
+};
+
+const getDefaultAssignedMessageIds = (orderMessages) => {
+  const messageIds = orderMessages.map((message) => message.id);
+  if (messageIds.includes(DEFAULT_ORDER_MESSAGE_ID)) return [DEFAULT_ORDER_MESSAGE_ID];
+  return messageIds[0] ? [messageIds[0]] : [];
+};
+
+const getVendorAssignedMessageIds = (vendor, orderMessages) => {
+  const availableMessageIds = new Set(orderMessages.map((message) => message.id));
+
+  if (Array.isArray(vendor?.assignedMessageIds)) {
+    return [...new Set(vendor.assignedMessageIds.filter((id) => availableMessageIds.has(id)))];
+  }
+
+  if (vendor?.includeDeliveryWindow === false) return [];
+  return getDefaultAssignedMessageIds(orderMessages);
+};
 
 export default function App() {
   const [storeId, setStoreId] = useState(localStorage.getItem('store_id'));
@@ -11,6 +55,8 @@ export default function App() {
   
   const [showMenu, setShowMenu] = useState(false);
   const [toast, setToast] = useState(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [orderMessages, setOrderMessages] = useState(DEFAULT_ORDER_MESSAGES);
 
   const [isDark, setIsDark] = useState(() => {
     const savedTheme = localStorage.getItem('theme');
@@ -36,6 +82,37 @@ export default function App() {
     setShowMenu(false);
   };
 
+  const refreshApp = async () => {
+    if (isRefreshing) return;
+
+    setIsRefreshing(true);
+    showToast('Refreshing app...');
+
+    try {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.update().catch(() => null)));
+      }
+    } catch (_) {
+      // Ignore refresh-prep issues and continue with a hard reload.
+    }
+
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('refresh', Date.now().toString());
+    window.location.replace(nextUrl.toString());
+  };
+
+  useEffect(() => {
+    if (!storeId) return undefined;
+
+    const unsubscribe = onSnapshot(doc(db, 'stores', storeId), (snapshot) => {
+      const data = snapshot.data() || {};
+      setOrderMessages(normalizeOrderMessages(data.orderMessages));
+    });
+
+    return () => unsubscribe();
+  }, [storeId]);
+
   if (!storeId) return <LoginScreen setStoreId={setStoreId} setIsAdmin={setIsAdmin} isDark={isDark} toggleTheme={toggleTheme} />;
 
   return (
@@ -55,6 +132,9 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button onClick={refreshApp} disabled={isRefreshing} className={`p-2.5 rounded-full active:scale-95 transition-all disabled:opacity-70 ${isDark ? 'bg-white/5 hover:bg-white/10 text-[#00E676]' : 'bg-gray-200 hover:bg-gray-300 text-green-700'}`}>
+              <RefreshCw size={19} className={isRefreshing ? 'animate-spin' : ''} />
+            </button>
             <button onClick={toggleTheme} className={`p-2.5 rounded-full active:scale-95 transition-all ${isDark ? 'bg-white/5 hover:bg-white/10 text-yellow-400' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}>
               {isDark ? <Sun size={20} /> : <Moon size={20} />}
             </button>
@@ -78,16 +158,16 @@ export default function App() {
       {/* CONTENT */}
       <div className="p-5 pb-28">
         {screen === 'home' ? (
-          <HomeScreen storeId={storeId} isAdmin={isAdmin} onVendorClick={(v) => { setSelectedVendor(v); setScreen('details'); }} isDark={isDark} showToast={showToast} />
+          <HomeScreen storeId={storeId} isAdmin={isAdmin} orderMessages={orderMessages} onVendorClick={(v) => { setSelectedVendor(v); setScreen('details'); }} isDark={isDark} showToast={showToast} />
         ) : (
-          <DetailsScreen storeId={storeId} isAdmin={isAdmin} vendor={selectedVendor} onBack={() => setScreen('home')} isDark={isDark} showToast={showToast} />
+          <DetailsScreen storeId={storeId} isAdmin={isAdmin} vendor={selectedVendor} orderMessages={orderMessages} onBack={() => setScreen('home')} isDark={isDark} showToast={showToast} />
         )}
       </div>
 
       {/* MENU DIALOG */}
       {showMenu && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 z-50 animate-in fade-in zoom-in-95 duration-200">
-          <div className={`p-6 rounded-3xl w-full max-w-sm space-y-6 border shadow-2xl relative overflow-hidden ${isDark ? 'bg-[#121212] border-white/10' : 'bg-white border-gray-200'}`}>
+          <div className={`p-6 rounded-3xl w-full max-w-sm max-h-[85vh] overflow-y-auto space-y-6 border shadow-2xl relative overflow-x-hidden ${isDark ? 'bg-[#121212] border-white/10' : 'bg-white border-gray-200'}`}>
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#FF1744] to-red-900"></div>
             <div className="flex justify-between items-center pb-2">
               <h2 className={`text-xl font-bold flex items-center gap-2 ${isDark ? 'text-white' : 'text-gray-900'}`}><Store size={20} className="text-[#FF1744]"/> Store Settings</h2>
@@ -100,6 +180,14 @@ export default function App() {
                 <p className="text-[#FF1744] text-2xl font-black tracking-widest font-mono">{storeId}</p>
               </div>
             </div>
+
+            {isAdmin && (
+              <AdminOrderMessageSettings
+                storeId={storeId}
+                isDark={isDark}
+                showToast={showToast}
+              />
+            )}
 
             <div className="pt-2 space-y-3">
               <button onClick={handleLogout} 
@@ -126,6 +214,12 @@ function LoginScreen({ setStoreId, setIsAdmin, isDark, toggleTheme }) {
     setIsAdmin(admin);
   };
 
+  const createStore = async () => {
+    const id = 'RL-' + Math.random().toString(36).substr(2, 6).toUpperCase();
+    await setDoc(doc(db, 'stores', id), { orderMessages: DEFAULT_ORDER_MESSAGES }, { merge: true });
+    handleLogin(id, true);
+  };
+
   return (
     <div className={`flex flex-col items-center justify-center min-h-screen p-8 text-center relative overflow-hidden transition-colors duration-500 ${isDark ? 'bg-[#0a0a0a]' : 'bg-gray-50'}`}>
       <button onClick={toggleTheme} className={`absolute top-6 right-6 p-3 rounded-full transition-all active:scale-95 ${isDark ? 'bg-white/5 text-yellow-400 hover:bg-white/10' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>
@@ -143,7 +237,7 @@ function LoginScreen({ setStoreId, setIsAdmin, isDark, toggleTheme }) {
 
       {mode === 'selection' ? (
         <div className="w-full space-y-4 max-w-xs relative z-10">
-          <button style={{ animationDelay: '0ms' }} onClick={() => handleLogin('RL-' + Math.random().toString(36).substr(2, 6).toUpperCase(), true)} 
+          <button style={{ animationDelay: '0ms' }} onClick={createStore} 
             className="w-full bg-gradient-to-r from-[#FF1744] to-red-700 text-white p-4 rounded-2xl font-bold shadow-[0_10px_20px_-10px_rgba(255,23,68,0.5)] hover:shadow-[0_10px_25px_-10px_rgba(255,23,68,0.7)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] transition-all duration-300 flex items-center justify-center gap-2 animate-in slide-in-from-bottom-4 fade-in fill-mode-backwards">
             <Store size={20} /> Create Store
           </button>
@@ -174,7 +268,7 @@ function LoginScreen({ setStoreId, setIsAdmin, isDark, toggleTheme }) {
 }
 
 // --- 2. HOME SCREEN ---
-function HomeScreen({ storeId, isAdmin, onVendorClick, isDark, showToast }) {
+function HomeScreen({ storeId, isAdmin, orderMessages, onVendorClick, isDark, showToast }) {
   const [vendors, setVendors] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
@@ -194,7 +288,7 @@ function HomeScreen({ storeId, isAdmin, onVendorClick, isDark, showToast }) {
     await addDoc(collection(db, 'stores', storeId, 'vendors'), {
       name: newName.trim(),
       supplies: [],
-      includeDeliveryWindow: true
+      assignedMessageIds: getDefaultAssignedMessageIds(orderMessages)
     });
     setNewName(''); 
     setShowAdd(false);
@@ -323,12 +417,11 @@ function HomeScreen({ storeId, isAdmin, onVendorClick, isDark, showToast }) {
 }
 
 // --- 3. DETAILS SCREEN ---
-function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) {
+function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark, showToast }) {
   const [supplies, setSupplies] = useState(vendor.supplies || []);
   const [showAdd, setShowAdd] = useState(false);
   const [newItem, setNewItem] = useState('');
   const [itemToDelete, setItemToDelete] = useState(null);
-  const [includeDeliveryWindow, setIncludeDeliveryWindow] = useState(vendor.includeDeliveryWindow !== false);
   const holdTimeoutRef = useRef(null);
   const holdIntervalRef = useRef(null);
   const holdTicksRef = useRef(0);
@@ -342,7 +435,6 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
 
   useEffect(() => {
     setSupplies(vendor.supplies || []);
-    setIncludeDeliveryWindow(vendor.includeDeliveryWindow !== false);
     setItemToDelete(null);
     skipPersistRef.current = true;
     stopAdjustPress();
@@ -356,15 +448,14 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
 
     const timeoutId = setTimeout(() => {
       updateDoc(doc(db, 'stores', storeId, 'vendors', vendor.id), {
-        supplies,
-        includeDeliveryWindow
+        supplies
       }).catch(() => {
         showToastRef.current("Couldn't save changes");
       });
     }, 250);
 
     return () => clearTimeout(timeoutId);
-  }, [includeDeliveryWindow, storeId, supplies, vendor.id]);
+  }, [storeId, supplies, vendor.id]);
 
   useEffect(() => () => stopAdjustPress(), []);
 
@@ -456,12 +547,15 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
 
     showToast("Preparing order...");
 
+    const assignedMessageIds = getVendorAssignedMessageIds(vendor, orderMessages);
+    const vendorMessages = orderMessages.filter((message) => assignedMessageIds.includes(message.id));
+
     let text = `*RED LANTERN RESTAURANT*\n`;
     text += `Date: ${new Date().toLocaleDateString()}\n`;
-    if (includeDeliveryWindow) {
-      text += `_Order must get delivered by 9:30am to 10:00am_\n`;
-    }
-    text += `\n`;
+    vendorMessages.forEach((message) => {
+      text += `_${message.text}_\n`;
+    });
+    text += '\n';
     text += `*VENDOR: ${vendor.name}*\n----------------\n`;
     
     activeItems.forEach(item => {
@@ -493,19 +587,6 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
           <p className="text-xs text-gray-500 font-medium mt-0.5">{supplies.length} registered items</p>
         </div>
       </div>
-
-      <label className={`mb-5 flex items-start gap-3 rounded-2xl border p-4 transition-colors ${isDark ? 'bg-[#121212] border-white/5' : 'bg-white border-gray-200 shadow-sm'}`}>
-        <input
-          type="checkbox"
-          checked={includeDeliveryWindow}
-          onChange={(e) => setIncludeDeliveryWindow(e.target.checked)}
-          className="mt-1 h-5 w-5 accent-[#FF1744]"
-        />
-        <div>
-          <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Include delivery time note</p>
-          <p className="text-sm text-gray-500">When checked, the WhatsApp order includes “Order must get delivered by 9:30am to 10:00am”.</p>
-        </div>
-      </label>
 
       <div className="space-y-3 flex-1">
         {supplies.length === 0 ? (
@@ -619,6 +700,221 @@ function DetailsScreen({ storeId, isAdmin, vendor, onBack, isDark, showToast }) 
         onClose={() => setItemToDelete(null)}
         onConfirm={confirmDeleteItem}
       />
+    </div>
+  );
+}
+
+function AdminOrderMessageSettings({ storeId, isDark, showToast }) {
+  const [savedMessages, setSavedMessages] = useState(DEFAULT_ORDER_MESSAGES);
+  const [draftMessages, setDraftMessages] = useState(DEFAULT_ORDER_MESSAGES);
+  const [newMessage, setNewMessage] = useState('');
+  const [vendors, setVendors] = useState([]);
+  const [isSavingMessages, setIsSavingMessages] = useState(false);
+  const [savingVendorId, setSavingVendorId] = useState(null);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'stores', storeId), (snapshot) => {
+      const data = snapshot.data() || {};
+      const normalized = normalizeOrderMessages(data.orderMessages);
+      setSavedMessages(normalized);
+      setDraftMessages(normalized);
+    });
+
+    return () => unsubscribe();
+  }, [storeId]);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'stores', storeId, 'vendors'), (snapshot) => {
+      setVendors(snapshot.docs.map((vendorDoc) => ({ id: vendorDoc.id, ...vendorDoc.data() })));
+    });
+
+    return () => unsubscribe();
+  }, [storeId]);
+
+  const updateDraftMessage = (id, text) => {
+    setDraftMessages((current) => current.map((message) => (
+      message.id === id ? { ...message, text } : message
+    )));
+  };
+
+  const addDraftMessage = () => {
+    if (!newMessage.trim()) return;
+
+    setDraftMessages((current) => [
+      ...current,
+      { id: `msg-${Date.now()}`, text: newMessage.trim() }
+    ]);
+    setNewMessage('');
+  };
+
+  const removeDraftMessage = (id) => {
+    if (draftMessages.length === 1) {
+      showToast('Keep at least one message template');
+      return;
+    }
+
+    setDraftMessages((current) => current.filter((message) => message.id !== id));
+  };
+
+  const saveMessages = async () => {
+    setIsSavingMessages(true);
+
+    const sanitizedMessages = normalizeOrderMessages(draftMessages);
+    const removedMessageIds = savedMessages
+      .map((message) => message.id)
+      .filter((id) => !sanitizedMessages.some((message) => message.id === id));
+
+    try {
+      await setDoc(doc(db, 'stores', storeId), { orderMessages: sanitizedMessages }, { merge: true });
+
+      if (removedMessageIds.length > 0) {
+        const vendorUpdates = vendors
+          .map((vendor) => {
+            const nextAssignedIds = getVendorAssignedMessageIds(vendor, savedMessages)
+              .filter((id) => !removedMessageIds.includes(id));
+
+            if (nextAssignedIds.length === getVendorAssignedMessageIds(vendor, savedMessages).length) return null;
+
+            return updateDoc(doc(db, 'stores', storeId, 'vendors', vendor.id), {
+              assignedMessageIds: nextAssignedIds
+            });
+          })
+          .filter(Boolean);
+
+        await Promise.all(vendorUpdates);
+      }
+
+      showToast('Order messages saved');
+    } catch (_) {
+      showToast("Couldn't save order messages");
+    } finally {
+      setIsSavingMessages(false);
+    }
+  };
+
+  const toggleVendorMessage = async (vendor, messageId, checked) => {
+    const currentAssignedIds = getVendorAssignedMessageIds(vendor, savedMessages);
+    const nextAssignedIds = checked
+      ? [...new Set([...currentAssignedIds, messageId])]
+      : currentAssignedIds.filter((id) => id !== messageId);
+
+    setSavingVendorId(vendor.id);
+    setVendors((current) => current.map((entry) => (
+      entry.id === vendor.id ? { ...entry, assignedMessageIds: nextAssignedIds } : entry
+    )));
+
+    try {
+      await updateDoc(doc(db, 'stores', storeId, 'vendors', vendor.id), {
+        assignedMessageIds: nextAssignedIds
+      });
+    } catch (_) {
+      showToast("Couldn't update vendor messages");
+      setVendors((current) => current.map((entry) => (
+        entry.id === vendor.id ? { ...entry, assignedMessageIds: currentAssignedIds } : entry
+      )));
+    } finally {
+      setSavingVendorId(null);
+    }
+  };
+
+  const hasUnsavedChanges = JSON.stringify(normalizeOrderMessages(draftMessages)) !== JSON.stringify(savedMessages);
+
+  return (
+    <div className={`rounded-2xl border p-4 space-y-4 ${isDark ? 'bg-black/40 border-white/5' : 'bg-gray-50 border-gray-200'}`}>
+      <div>
+        <h3 className={`font-bold text-base ${isDark ? 'text-white' : 'text-gray-900'}`}>Vendor Order Messages</h3>
+        <p className="text-sm text-gray-500 mt-1">Create message templates here, then assign the right ones to each vendor below.</p>
+      </div>
+
+      <div className="space-y-3">
+        {draftMessages.map((message, index) => (
+          <div key={message.id} className="flex items-start gap-2">
+            <textarea
+              value={message.text}
+              onChange={(e) => updateDraftMessage(message.id, e.target.value)}
+              rows={2}
+              placeholder={`Message ${index + 1}`}
+              className={`flex-1 border p-3 rounded-2xl focus:border-[#FF1744] focus:ring-1 focus:ring-[#FF1744] focus:outline-none transition-all resize-none ${isDark ? 'bg-[#121212] border-white/10 text-white placeholder-gray-600' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'}`}
+            />
+            <button
+              onClick={() => removeDraftMessage(message.id)}
+              className={`mt-1 p-2.5 rounded-xl transition-colors ${isDark ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'bg-red-50 text-red-600 hover:bg-red-100'}`}
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-start gap-2">
+        <textarea
+          value={newMessage}
+          onChange={(e) => setNewMessage(e.target.value)}
+          rows={2}
+          placeholder="Add another message template"
+          className={`flex-1 border p-3 rounded-2xl focus:border-[#FF1744] focus:ring-1 focus:ring-[#FF1744] focus:outline-none transition-all resize-none ${isDark ? 'bg-[#121212] border-white/10 text-white placeholder-gray-600' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'}`}
+        />
+        <button
+          onClick={addDraftMessage}
+          disabled={!newMessage.trim()}
+          className="mt-1 px-4 py-3 rounded-2xl bg-[#FF1744] text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Add
+        </button>
+      </div>
+
+      <button
+        onClick={saveMessages}
+        disabled={!hasUnsavedChanges || isSavingMessages}
+        className="w-full bg-[#FF1744] text-white p-3.5 rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {isSavingMessages ? 'Saving Messages...' : 'Save Messages'}
+      </button>
+
+      <div className="space-y-3 pt-1">
+        <div>
+          <h4 className={`font-bold text-sm uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Assign Per Vendor</h4>
+          <p className="text-sm text-gray-500 mt-1">Open a vendor and check only the messages that should appear in that vendor’s order.</p>
+        </div>
+
+        {vendors.length === 0 ? (
+          <div className={`rounded-2xl border border-dashed p-4 text-sm text-gray-500 ${isDark ? 'border-white/10 bg-[#121212]' : 'border-gray-300 bg-white'}`}>
+            Add vendors first, then you can assign messages here.
+          </div>
+        ) : (
+          vendors.map((vendor) => {
+            const assignedMessageIds = getVendorAssignedMessageIds(vendor, savedMessages);
+
+            return (
+              <details key={vendor.id} className={`rounded-2xl border ${isDark ? 'border-white/10 bg-[#121212]' : 'border-gray-300 bg-white'}`}>
+                <summary className="list-none cursor-pointer p-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{vendor.name}</p>
+                    <p className="text-sm text-gray-500">{assignedMessageIds.length} message{assignedMessageIds.length === 1 ? '' : 's'} selected</p>
+                  </div>
+                  <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${isDark ? 'bg-white/5 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                    Assign
+                  </span>
+                </summary>
+                <div className="px-4 pb-4 space-y-2">
+                  {savedMessages.map((message) => (
+                    <label key={message.id} className={`flex items-start gap-3 rounded-xl border p-3 ${isDark ? 'border-white/5 bg-black/30' : 'border-gray-200 bg-gray-50'}`}>
+                      <input
+                        type="checkbox"
+                        checked={assignedMessageIds.includes(message.id)}
+                        disabled={savingVendorId === vendor.id}
+                        onChange={(e) => toggleVendorMessage(vendor, message.id, e.target.checked)}
+                        className="mt-1 h-4 w-4 accent-[#FF1744]"
+                      />
+                      <span className={`text-sm ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>{message.text}</span>
+                    </label>
+                  ))}
+                </div>
+              </details>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }

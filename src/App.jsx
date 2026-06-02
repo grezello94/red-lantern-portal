@@ -7,6 +7,26 @@ const DEFAULT_ORDER_MESSAGE_ID = 'delivery-window-default';
 const DEFAULT_ORDER_MESSAGES = [
   { id: DEFAULT_ORDER_MESSAGE_ID, text: 'Order must get delivered by 9:30am to 10:00am' }
 ];
+const ITEM_UNITS = ['KG', 'PIECES', 'BUNDLE'];
+const DEFAULT_ITEM_UNIT = 'PIECES';
+
+const normalizeItemUnit = (unit) => (
+  ITEM_UNITS.includes(unit) ? unit : DEFAULT_ITEM_UNIT
+);
+
+const normalizeSupplies = (supplies) => (
+  Array.isArray(supplies)
+    ? supplies.map((item) => ({
+        ...item,
+        id: item?.id || `item-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: typeof item?.name === 'string' ? item.name : '',
+        quantity: Number.isFinite(Number(item?.quantity)) ? Math.max(0, Number(item.quantity)) : 0,
+        unit: normalizeItemUnit(item?.unit)
+      })).filter((item) => item.name.trim())
+    : []
+);
+
+const formatOrderQuantity = (item) => `${item.quantity} ${normalizeItemUnit(item.unit)}`;
 
 const normalizeOrderMessages = (messages) => {
   const normalized = Array.isArray(messages)
@@ -418,7 +438,7 @@ function HomeScreen({ storeId, isAdmin, orderMessages, onVendorClick, isDark, sh
 
 // --- 3. DETAILS SCREEN ---
 function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark, showToast }) {
-  const [supplies, setSupplies] = useState(vendor.supplies || []);
+  const [supplies, setSupplies] = useState(() => normalizeSupplies(vendor.supplies));
   const [showAdd, setShowAdd] = useState(false);
   const [newItem, setNewItem] = useState('');
   const [itemToDelete, setItemToDelete] = useState(null);
@@ -434,7 +454,7 @@ function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark
   }, [showToast]);
 
   useEffect(() => {
-    setSupplies(vendor.supplies || []);
+    setSupplies(normalizeSupplies(vendor.supplies));
     setItemToDelete(null);
     skipPersistRef.current = true;
     stopAdjustPress();
@@ -489,6 +509,12 @@ function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark
     }));
   };
 
+  const updateItemUnit = (index, unit) => {
+    updateSuppliesState((current) => current.map((item, itemIndex) => (
+      itemIndex === index ? { ...item, unit: normalizeItemUnit(unit) } : item
+    )));
+  };
+
   const getHoldStep = (ticks) => {
     if (ticks > 18) return 10;
     if (ticks > 8) return 5;
@@ -534,7 +560,7 @@ function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark
     if (!newItem.trim()) return;
     updateSuppliesState((current) => [
       ...current,
-      { id: Date.now().toString(), name: newItem.trim(), quantity: 0 }
+      { id: Date.now().toString(), name: newItem.trim(), quantity: 0, unit: DEFAULT_ITEM_UNIT }
     ]);
     setNewItem(''); 
     setShowAdd(false);
@@ -559,7 +585,7 @@ function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark
     text += `*VENDOR: ${vendor.name}*\n----------------\n`;
     
     activeItems.forEach(item => {
-      text += `• ${item.name}: *${item.quantity}*\n`; 
+      text += `• ${item.name}: *${formatOrderQuantity(item)}*\n`; 
     });
 
     const encodedText = encodeURIComponent(text);
@@ -604,17 +630,24 @@ function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark
           </div>
         ) : (
           supplies.map((item, idx) => (
-            <div key={item.id} className={`p-4 rounded-2xl flex items-center justify-between border transition-all duration-300 ${
+            <div key={item.id} className={`p-4 rounded-2xl border transition-all duration-300 ${
               item.quantity > 0 
                 ? isDark ? 'bg-[#FF1744]/10 border-[#FF1744]/30 shadow-[0_0_15px_rgba(255,23,68,0.05)]' : 'bg-red-50 border-red-200 shadow-sm'
                 : isDark ? 'bg-[#121212] border-white/5 hover:border-white/10' : 'bg-white border-gray-200 hover:border-gray-300 shadow-sm'
             } animate-in slide-in-from-bottom-2 fade-in fill-mode-backwards`} style={{ animationDelay: `${idx * 30}ms` }}>
-              <div className="flex-1 mr-4 min-w-0">
-                <span className={`font-bold text-base truncate block transition-colors ${
-                  item.quantity > 0 ? 'text-[#FF1744]' : (isDark ? 'text-gray-200' : 'text-gray-700')
-                }`}>{item.name}</span>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex-1 min-w-0">
+                  <span className={`font-bold text-base truncate block transition-colors ${
+                    item.quantity > 0 ? 'text-[#FF1744]' : (isDark ? 'text-gray-200' : 'text-gray-700')
+                  }`}>{item.name}</span>
+                </div>
+                {isAdmin && (
+                  <button onClick={() => setItemToDelete({ index: idx, name: item.name })} className={`shrink-0 p-2.5 rounded-xl transition-colors ${isDark ? 'text-gray-600 hover:bg-red-500/10 hover:text-red-500' : 'text-gray-400 hover:bg-red-50 hover:text-red-600'}`}>
+                    <Trash2 size={18} />
+                  </button>
+                )}
               </div>
-              <div className={`flex items-center gap-2 rounded-2xl px-2 py-1.5 border ${isDark ? 'bg-black/40 border-white/5' : 'bg-gray-100 border-gray-200'}`}>
+              <div className={`grid ${isAdmin ? 'grid-cols-[44px_minmax(42px,1fr)_44px_84px]' : 'grid-cols-[44px_minmax(42px,1fr)_44px_76px]'} items-center gap-2 rounded-2xl px-2 py-1.5 border ${isDark ? 'bg-black/40 border-white/5' : 'bg-gray-100 border-gray-200'}`}>
                 <button
                   type="button"
                   onPointerDown={(e) => {
@@ -630,7 +663,9 @@ function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark
                 >
                   <Minus size={20} strokeWidth={3.25} />
                 </button>
-                <span className={`w-10 text-center font-black text-xl tabular-nums ${item.quantity > 0 ? (isDark ? 'text-white' : 'text-gray-900') : 'text-gray-500'}`}>{item.quantity}</span>
+                <span className={`min-w-0 text-center font-black text-xl tabular-nums ${item.quantity > 0 ? (isDark ? 'text-white' : 'text-gray-900') : 'text-gray-500'}`}>
+                  {item.quantity}
+                </span>
                 <button
                   type="button"
                   onPointerDown={(e) => {
@@ -645,12 +680,26 @@ function DetailsScreen({ storeId, isAdmin, vendor, orderMessages, onBack, isDark
                 >
                   <Plus size={20} strokeWidth={3.25} />
                 </button>
+                {isAdmin ? (
+                  <select
+                    value={normalizeItemUnit(item.unit)}
+                    onChange={(e) => updateItemUnit(idx, e.target.value)}
+                    className={`h-11 rounded-xl border px-2 text-xs font-black uppercase focus:border-[#FF1744] focus:ring-1 focus:ring-[#FF1744] focus:outline-none ${
+                      isDark ? 'bg-[#121212] border-white/10 text-white' : 'bg-white border-gray-300 text-gray-900'
+                    }`}
+                  >
+                    {ITEM_UNITS.map((unit) => (
+                      <option key={unit} value={unit}>{unit}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className={`h-11 rounded-xl border px-2 flex items-center justify-center text-xs font-black uppercase ${
+                    isDark ? 'bg-[#121212] border-white/10 text-white' : 'bg-white border-gray-300 text-gray-900'
+                  }`}>
+                    {normalizeItemUnit(item.unit)}
+                  </span>
+                )}
               </div>
-              {isAdmin && (
-                <button onClick={() => setItemToDelete({ index: idx, name: item.name })} className={`ml-2 p-2.5 rounded-xl transition-colors ${isDark ? 'text-gray-600 hover:bg-red-500/10 hover:text-red-500' : 'text-gray-400 hover:bg-red-50 hover:text-red-600'}`}>
-                  <Trash2 size={18} />
-                </button>
-              )}
             </div>
           ))
         )}

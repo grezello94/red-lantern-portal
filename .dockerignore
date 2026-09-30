@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.vercel
+*.log
+.vite-dev.*
+.env
+.env.*
+README.md

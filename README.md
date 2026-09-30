@@ -1,16 +1,40 @@
-# React + Vite
+# Red Lantern Supply Portal
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React/Vite supply management app backed by Firebase Firestore.
 
-Currently, two official plugins are available:
+## Local Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+```sh
+npm install
+npm run dev
+```
 
-## React Compiler
+Copy `.env.example` to `.env` and set the Firebase values from Firebase Console > Project settings > General > Your apps.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Production Build
 
-## Expanding the ESLint configuration
+```sh
+npm run build
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Coolify Deployment
+
+Use the included `Dockerfile`.
+
+Coolify settings:
+
+- Build Pack: Dockerfile
+- Dockerfile Location: `/Dockerfile`
+- Port: `80`
+- Domain: your production domain
+
+Build variables:
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+
+After the Coolify deployment is live, move your DNS record from Vercel to the Contabo server IP used by Coolify. In Firebase, add the new production domain to the authorized domains list if authentication is enabled later.

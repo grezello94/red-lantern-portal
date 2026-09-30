@@ -1,14 +1,13 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
-// --- IMPORTANT: REPLACE THIS WITH YOUR OWN CONFIG FROM FIREBASE CONSOLE ---
 const firebaseConfig = {
-  apiKey: "AIzaSyCXGR04qg3j9ZeTtMgi6z8_4aGOAti_Qhk", 
-  authDomain: "red-lantern-supply.firebaseapp.com",
-  projectId: "red-lantern-supply",
-  storageBucket: "red-lantern-supply.firebasestorage.app",
-  messagingSenderId: "272248173898",
-  appId: "YOUR_WEB_APP_ID" // Go to Firebase Console > Project Settings > General to find this!
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyCXGR04qg3j9ZeTtMgi6z8_4aGOAti_Qhk",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "red-lantern-supply.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "red-lantern-supply",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "red-lantern-supply.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "272248173898",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "YOUR_WEB_APP_ID"
 };
 
 const app = initializeApp(firebaseConfig);

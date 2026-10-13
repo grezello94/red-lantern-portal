@@ -1,12 +1,11 @@
 import { useMemo, useState } from 'react';
-import { ArrowDownRight, ArrowUpRight, Check, ClipboardList, Copy, Layers3, LoaderCircle, Package, Pencil, Plus, Search, ShoppingBag, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronRight, Layers3, LoaderCircle, Package, Pencil, Plus, Search, Share2, ShoppingBag, Trash2, X } from 'lucide-react';
 import { createSupplier, deleteSupplier, updateSupplier } from '../data';
 import { EmptyState, Field, Modal } from './ui';
 
 const getSupplies = (supplier) => Array.isArray(supplier.supplies) ? supplier.supplies : [];
 const getDraftCount = (supplier) => getSupplies(supplier).filter((item) => Number(item.quantity) > 0).length;
-const getInitials = (name) => name.trim().split(/\s+/).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'S';
-const tones = ['coral', 'mint', 'amber', 'violet'];
+const getInitials = (name) => name.trim().charAt(0).toUpperCase() || 'S';
 
 export default function SupplierDashboard({ storeId, isAdmin, suppliers = [], loading, error, onSelect, onRetry, orderMessages = [], showToast }) {
   const [search, setSearch] = useState('');
@@ -18,12 +17,6 @@ export default function SupplierDashboard({ storeId, isAdmin, suppliers = [], lo
   const [pending, setPending] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [copied, setCopied] = useState(false);
-
-  const stats = useMemo(() => ({
-    suppliers: suppliers.length,
-    items: suppliers.reduce((sum, supplier) => sum + getSupplies(supplier).length, 0),
-    drafts: suppliers.filter((supplier) => getDraftCount(supplier) > 0).length,
-  }), [suppliers]);
 
   const filteredSuppliers = useMemo(() => suppliers.filter((supplier) => {
     const matchesSearch = String(supplier.name || '').toLowerCase().includes(search.toLowerCase().trim());
@@ -104,28 +97,18 @@ export default function SupplierDashboard({ storeId, isAdmin, suppliers = [], lo
 
   return (
     <div className="dashboard">
-      <header className="page-heading">
-        <div className="page-heading-copy">
-          <p className="eyebrow"><span /> WORKSPACE / PROCUREMENT</p>
-          <h1 className="page-title">Your next order<br />starts here<span className="accent-text">.</span></h1>
-          <p className="page-subtitle">Choose a supplier, build your order, and keep your shelves stocked.</p>
-        </div>
-        {isAdmin && <button className="btn btn-primary" onClick={() => openEditor()}><Plus size={17} /> Add supplier</button>}
-      </header>
-
-      <section className="stat-grid" aria-label="Workspace overview">
-        <Stat icon={Users} tone="coral" label="SUPPLIERS" value={loading || error ? '—' : stats.suppliers} caption="Your supply network" />
-        <Stat icon={Package} tone="mint" label="CATALOG ITEMS" value={loading || error ? '—' : stats.items} caption="Across all suppliers" />
-        <Stat icon={ClipboardList} tone="violet" label="ORDER DRAFTS" value={loading || error ? '—' : stats.drafts} caption="Suppliers with selected items" />
-      </section>
+      {isAdmin && <button className="invite-card" onClick={copyCode} aria-label="Invite Staff: copy store code" title="Copy store code to invite staff">
+        <span className="invite-icon"><Share2 size={22} /></span>
+        <span className="invite-copy">
+          <strong>Invite Staff</strong>
+          <span className="invite-code">Code: <code>{storeId}</code></span>
+        </span>
+        <span className="invite-copy-button" aria-hidden="true">{copied ? <Check size={20} /> : <ChevronRight size={20} />}</span>
+      </button>}
 
       <section className="supplier-directory" aria-labelledby="supplier-directory-title">
         <div className="section-heading">
-          <div>
-            <h2 id="supplier-directory-title" className="section-title">Supplier directory <span className="section-count">{loading || error ? '—' : stats.suppliers}</span></h2>
-            <p className="section-description">Everything you need. One supplier at a time.</p>
-          </div>
-          <span className="directory-note"><span className="status-dot" /> Your workspace</span>
+          <h1 id="supplier-directory-title" className="section-title">Your Suppliers <span className="section-count">{loading || error ? '—' : suppliers.length}</span></h1>
         </div>
 
         <div className="directory-toolbar">
@@ -135,46 +118,39 @@ export default function SupplierDashboard({ storeId, isAdmin, suppliers = [], lo
             {search && <button type="button" className="icon-button" aria-label="Clear supplier search" onClick={() => setSearch('')}><X size={15} /></button>}
           </label>
           <div className="segmented-control" aria-label="Filter suppliers">
-            <button className={`segment ${filter === 'all' ? 'active' : ''}`} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All suppliers <span className="segment-count">{stats.suppliers}</span></button>
-            <button className={`segment ${filter === 'drafts' ? 'active' : ''}`} aria-pressed={filter === 'drafts'} onClick={() => setFilter('drafts')}>With draft <span className="segment-count">{stats.drafts}</span></button>
+            <button className={`segment ${filter === 'all' ? 'active' : ''}`} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All</button>
+            <button className={`segment ${filter === 'drafts' ? 'active' : ''}`} aria-pressed={filter === 'drafts'} onClick={() => setFilter('drafts')}>With draft</button>
           </div>
         </div>
 
         {error ? (
           <EmptyState icon={Layers3} title="Your suppliers could not load" description={error} action={<button className="btn btn-secondary" onClick={onRetry}>Try again</button>} />
         ) : loading ? (
-          <div className="supplier-grid" aria-busy="true" aria-label="Loading suppliers">
-            {[0, 1, 2, 3, 4, 5].map((index) => <div className="supplier-card supplier-skeleton" key={index}><div className="skeleton skeleton-avatar" /><div className="skeleton skeleton-title" /><div className="skeleton skeleton-line" /><div className="skeleton skeleton-button" /></div>)}
+          <div className="supplier-list" aria-busy="true" aria-label="Loading suppliers">
+            {[0, 1, 2].map((index) => <div className="supplier-card supplier-skeleton" key={index}><div className="skeleton skeleton-avatar" /><div className="supplier-row-copy"><div className="skeleton skeleton-title" /><div className="skeleton skeleton-line" /></div></div>)}
           </div>
         ) : suppliers.length === 0 ? (
           <EmptyState icon={ShoppingBag} title="Your supply network starts here" description={isAdmin ? 'Add your first supplier, set up their catalog, and prepare an order in minutes.' : 'Ask your workspace administrator to add suppliers so you can start placing orders.'} action={isAdmin ? <button className="btn btn-primary" onClick={() => openEditor()}><Plus size={16} /> Add your first supplier</button> : null} />
         ) : filteredSuppliers.length === 0 ? (
           <EmptyState icon={Search} title={search ? 'No matching suppliers' : 'A fresh start for your next order'} description={search ? `No suppliers match “${search}”. Try another name.` : 'Select a supplier and add quantities. Your order drafts will appear here.'} action={<button className="btn btn-secondary" onClick={() => { setSearch(''); setFilter('all'); }}>View all suppliers</button>} />
         ) : (
-          <div className="supplier-grid">
+          <div className="supplier-list">
             {filteredSuppliers.map((supplier) => {
               const draftCount = getDraftCount(supplier);
-              const originalIndex = suppliers.findIndex((entry) => entry.id === supplier.id);
               return (
                 <article className="supplier-card" key={supplier.id}>
-                  <div className="supplier-card-top">
-                    <div className={`supplier-avatar ${tones[originalIndex % tones.length]}`} aria-hidden="true">{getInitials(supplier.name || 'Supplier')}</div>
-                    <div className="supplier-card-actions">
-                      {isAdmin && <>
-                        <button className="icon-button" aria-label={`Edit ${supplier.name}`} onClick={() => openEditor(supplier)} title="Edit supplier"><Pencil size={15} /></button>
-                        <button className="icon-button danger-hover" aria-label={`Delete ${supplier.name}`} onClick={() => { setDeleteTarget(supplier); setFormError(''); }} title="Delete supplier"><Trash2 size={15} /></button>
-                      </>}
-                    </div>
-                  </div>
-                  <div className="supplier-card-body">
-                    <p className="supplier-card-label">SUPPLIER / {String(originalIndex + 1).padStart(2, '0')}</p>
-                    <h3>{supplier.name}</h3>
-                    <p className="supplier-meta"><Package size={14} /> {getSupplies(supplier).length} catalog {getSupplies(supplier).length === 1 ? 'item' : 'items'}{supplier.phone && <span className="supplier-contact-dot" title="WhatsApp number saved" aria-label="WhatsApp number saved" />}</p>
-                  </div>
-                  <div className="supplier-card-footer">
-                    <span className={`supplier-draft ${draftCount > 0 ? 'has-draft' : ''}`}><span className="supplier-draft-dot" />{draftCount > 0 ? `${draftCount} ${draftCount === 1 ? 'item' : 'items'} in draft` : 'Ready for your order'}</span>
-                    <button className={`btn ${draftCount ? 'btn-primary' : 'btn-secondary'} supplier-order-button`} onClick={() => onSelect(supplier)}>{draftCount ? 'Continue order' : 'Create order'}<ArrowUpRight size={17} /></button>
-                  </div>
+                  <button className="supplier-open" onClick={() => onSelect(supplier)} aria-label={`${draftCount ? 'Continue' : 'Create'} order for ${supplier.name}`}>
+                    <span className="supplier-avatar" aria-hidden="true">{getInitials(supplier.name || 'Supplier')}</span>
+                    <span className="supplier-row-copy">
+                      <span className="supplier-row-name">{supplier.name}</span>
+                      <span className="supplier-meta"><Package size={14} /> {getSupplies(supplier).length} catalog {getSupplies(supplier).length === 1 ? 'item' : 'items'}</span>
+                      {draftCount > 0 && <span className="supplier-draft badge badge-accent">{draftCount} {draftCount === 1 ? 'item' : 'items'} in draft</span>}
+                    </span>
+                  </button>
+                  {isAdmin && <div className="supplier-row-actions">
+                    <button className="icon-button" aria-label={`Edit ${supplier.name}`} onClick={() => openEditor(supplier)} title="Edit supplier"><Pencil size={17} /></button>
+                    <button className="icon-button danger-hover" aria-label={`Delete ${supplier.name}`} onClick={() => { setDeleteTarget(supplier); setFormError(''); }} title="Delete supplier"><Trash2 size={18} /></button>
+                  </div>}
                 </article>
               );
             })}
@@ -182,13 +158,7 @@ export default function SupplierDashboard({ storeId, isAdmin, suppliers = [], lo
         )}
       </section>
 
-      {isAdmin && <section className="team-card" aria-labelledby="team-title">
-        <div className="team-card-icon"><Users size={22} /></div>
-        <div className="team-card-copy"><h3 id="team-title">Good orders are a team effort.</h3><p>Share your workspace code with staff so they can prepare orders.</p></div>
-        <code className="team-code">{storeId}</code>
-        <button className="btn btn-secondary" onClick={copyCode}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? 'Copied' : 'Copy code'}</button>
-        <ArrowDownRight className="team-card-decoration" size={38} aria-hidden="true" />
-      </section>}
+      {isAdmin && <button className="add-supplier-fab" onClick={() => openEditor()} aria-label="Add supplier" title="Add supplier"><Plus size={30} strokeWidth={2.5} /></button>}
 
       {editing && <Modal title={editing.id ? 'Edit supplier' : 'Add a supplier'} description="Build your supply network. You can add catalog items after saving." onClose={closeEditor}>
         <form className="form-stack" onSubmit={saveSupplier}>
@@ -206,9 +176,4 @@ export default function SupplierDashboard({ storeId, isAdmin, suppliers = [], lo
       </Modal>}
     </div>
   );
-}
-
-function Stat({ icon, tone, label, value, caption }) {
-  const Icon = icon;
-  return <div className="stat-card"><div className={`stat-icon ${tone}`}><Icon size={21} strokeWidth={1.8} /></div><div className="stat-copy"><p className="stat-label">{label}</p><p className="stat-value">{value}</p><p className="stat-caption">{caption}</p></div><ArrowUpRight className="stat-arrow" size={17} aria-hidden="true" /></div>;
 }

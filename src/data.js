@@ -1,11 +1,17 @@
-import { collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, setDoc, arrayUnion } from 'firebase/firestore';
 import { db } from './firebase';
 
 export const DEFAULT_ORDER_MESSAGES = [
   { id: 'delivery-window-default', text: 'Please deliver between 9:30am and 10:00am.' },
 ];
 export const ITEM_UNITS = ['KG', 'PIECES', 'BUNDLE'];
-export const normalizeItemUnit = (unit) => ITEM_UNITS.includes(unit) ? unit : 'PIECES';
+export const normalizeItemUnit = (unit) => typeof unit === 'string' && unit.trim()
+  ? unit.trim().replace(/\s+/g, ' ').toUpperCase()
+  : 'PIECES';
+export const normalizeItemUnits = (units) => [...new Set([
+  ...ITEM_UNITS,
+  ...(Array.isArray(units) ? units.filter((unit) => typeof unit === 'string' && unit.trim()).map(normalizeItemUnit) : []),
+])];
 export const normalizeSupplies = (supplies) => Array.isArray(supplies) ? supplies
   .filter((item) => typeof item?.name === 'string' && item.name.trim())
   .map((item, index) => ({ ...item, id: item.id || `item-${index}`, quantity: Number.isFinite(Number(item.quantity)) ? Math.max(0, Number(item.quantity)) : 0, unit: normalizeItemUnit(item.unit) })) : [];
@@ -43,6 +49,7 @@ const DEMO_KEY = 'red_lantern_demo_v1';
 const DEMO_EVENT = 'red-lantern-demo-change';
 const INITIAL_DEMO = {
   orderMessages: DEFAULT_ORDER_MESSAGES,
+  itemUnits: ITEM_UNITS,
   suppliers: [
     { id: 'fresh', name: 'Fresh Harvest', supplies: [{ id: 'tomato', name: 'Tomatoes', unit: 'KG', quantity: 5 }, { id: 'onion', name: 'Red onions', unit: 'KG', quantity: 3 }, { id: 'coriander', name: 'Fresh coriander', unit: 'BUNDLE', quantity: 0 }, { id: 'potato', name: 'Potatoes', unit: 'KG', quantity: 0 }, { id: 'pepper', name: 'Bell peppers', unit: 'KG', quantity: 0 }], assignedMessageIds: ['delivery-window-default'] },
     { id: 'pantry', name: 'The Pantry Co.', supplies: [{ id: 'rice', name: 'Basmati rice', unit: 'KG', quantity: 0 }, { id: 'flour', name: 'All-purpose flour', unit: 'KG', quantity: 0 }, { id: 'oil', name: 'Cooking oil bottles', unit: 'PIECES', quantity: 0 }, { id: 'sauce', name: 'Soy sauce bottles', unit: 'PIECES', quantity: 0 }], assignedMessageIds: ['delivery-window-default'] },
@@ -75,13 +82,13 @@ export function subscribeSuppliers(storeId, callback, onError) {
 }
 
 export function subscribeStore(storeId, callback, onError) {
-  if (storeId === 'demo') return subscribeDemo((data) => ({ orderMessages: data.orderMessages }), callback);
+  if (storeId === 'demo') return subscribeDemo((data) => ({ orderMessages: data.orderMessages, itemUnits: data.itemUnits }), callback);
   return onSnapshot(doc(db, 'stores', storeId), (snapshot) => callback(snapshot.data() || {}), onError);
 }
 
 export async function createStore() {
   const id = `RL-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
-  await setDoc(doc(db, 'stores', id), { orderMessages: DEFAULT_ORDER_MESSAGES });
+  await setDoc(doc(db, 'stores', id), { orderMessages: DEFAULT_ORDER_MESSAGES, itemUnits: ITEM_UNITS });
   return id;
 }
 
@@ -119,4 +126,18 @@ export async function deleteSupplier(storeId, id) {
 export async function saveStore(storeId, changes) {
   if (storeId === 'demo') { writeDemo({ ...readDemo(), ...changes }); return; }
   return setDoc(doc(db, 'stores', storeId), changes, { merge: true });
+}
+
+export async function addItemUnit(storeId, name) {
+  if (typeof name !== 'string' || !name.trim()) throw new Error('Enter a unit name.');
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new Error('Use a readable unit name.');
+  const unit = normalizeItemUnit(name);
+  if (unit.length > 24) throw new Error('Unit names can contain up to 24 characters.');
+  if (storeId === 'demo') {
+    const data = readDemo();
+    writeDemo({ ...data, itemUnits: normalizeItemUnits([...normalizeItemUnits(data.itemUnits), unit]) });
+    return;
+  }
+  // Atomic additions preserve units added by another admin at the same time.
+  return setDoc(doc(db, 'stores', storeId), { itemUnits: arrayUnion(...ITEM_UNITS, unit) }, { merge: true });
 }

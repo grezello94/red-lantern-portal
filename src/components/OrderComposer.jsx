@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft, ArrowUpRight, Check, CheckCircle2, Clipboard, CloudOff,
-  CircleAlert, LoaderCircle, MessageCircle, Minus, Package, Plus,
-  Search, ShoppingBag, Trash2, Truck,
+  CircleAlert, ChevronDown, LoaderCircle, MessageCircle, Minus, Package, Plus,
+  Search, Send, ShoppingBag, Trash2, Truck,
 } from 'lucide-react';
 import {
-  formatOrderMessage, getVendorAssignedMessageIds, normalizeItemUnit,
-  normalizeSupplies, updateSupplier,
+  formatOrderMessage, getVendorAssignedMessageIds, ITEM_UNITS, normalizeItemUnit,
+  normalizeItemUnits, normalizeSupplies, updateSupplier,
 } from '../data.js';
 import { EmptyState, Field, Modal } from './ui.jsx';
 
-const UNITS = ['KG', 'PIECES', 'BUNDLE'];
 const displayQuantity = (quantity) => new Intl.NumberFormat('en-IN', { maximumFractionDigits: 4 }).format(quantity);
 
 function readDraftBackup(key) {
@@ -41,7 +40,7 @@ function clearSavedBackup(key, supplies) {
   }
 }
 
-export default function OrderComposer({ storeId, isAdmin, supplier, orderMessages = [], onBack, showToast }) {
+export default function OrderComposer({ storeId, isAdmin, supplier, orderMessages = [], itemUnits = ITEM_UNITS, onBack, showToast }) {
   const draftKey = `red_lantern_draft_v1:${storeId}:${supplier.id}`;
   const [initialDraft] = useState(() => readDraftBackup(draftKey));
   const [supplies, setSupplies] = useState(() => normalizeSupplies(initialDraft?.pending ? initialDraft.supplies : supplier.supplies));
@@ -69,7 +68,34 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
   const mountedRef = useRef(true);
   const toastRef = useRef(showToast);
   const lastRemoteRef = useRef(JSON.stringify(normalizeSupplies(supplier.supplies)));
+  const holdTimeoutRef = useRef(null);
+  const holdIntervalRef = useRef(null);
+  const holdTicksRef = useRef(0);
+  const suppressPointerClickRef = useRef(null);
+  const lastHapticRef = useRef(0);
   const isDemo = storeId === 'demo';
+
+  const stopAdjustPress = useCallback(() => {
+    clearTimeout(holdTimeoutRef.current);
+    clearInterval(holdIntervalRef.current);
+    holdTimeoutRef.current = null;
+    holdIntervalRef.current = null;
+    holdTicksRef.current = 0;
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('pointerup', stopAdjustPress);
+    window.addEventListener('pointercancel', stopAdjustPress);
+    window.addEventListener('blur', stopAdjustPress);
+    document.addEventListener('visibilitychange', stopAdjustPress);
+    return () => {
+      stopAdjustPress();
+      window.removeEventListener('pointerup', stopAdjustPress);
+      window.removeEventListener('pointercancel', stopAdjustPress);
+      window.removeEventListener('blur', stopAdjustPress);
+      document.removeEventListener('visibilitychange', stopAdjustPress);
+    };
+  }, [stopAdjustPress]);
 
   useEffect(() => { toastRef.current = showToast; }, [showToast]);
 
@@ -172,13 +198,50 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     changeSupplies((current) => current.map((item) => item.id === id ? { ...item, quantity: safeQuantity } : item));
   };
 
+  const adjustQuantity = (id, direction, step = 1) => {
+    const item = suppliesRef.current.find((entry) => entry.id === id);
+    if (!item || (direction < 0 && item.quantity === 0)) { stopAdjustPress(); return false; }
+    forgetQuantityDraft(id);
+    changeQuantity(id, item.quantity + direction * step);
+    if (typeof navigator.vibrate === 'function' && Date.now() - lastHapticRef.current > 90) {
+      lastHapticRef.current = Date.now();
+      navigator.vibrate(12);
+    }
+    return true;
+  };
+
+  const startAdjustPress = (event, id, direction) => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    stopAdjustPress();
+    if (!adjustQuantity(id, direction)) return;
+    suppressPointerClickRef.current = { id, direction };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    holdTimeoutRef.current = setTimeout(() => {
+      holdIntervalRef.current = setInterval(() => {
+        holdTicksRef.current += 1;
+        adjustQuantity(id, direction, holdTicksRef.current > 18 ? 10 : holdTicksRef.current > 8 ? 5 : 1);
+      }, 120);
+    }, 350);
+  };
+
+  const handleStepperClick = (event, id, direction) => {
+    const pointerPress = suppressPointerClickRef.current;
+    suppressPointerClickRef.current = null;
+    if (event.detail !== 0 && pointerPress?.id === id && pointerPress.direction === direction) return;
+    adjustQuantity(id, direction);
+  };
+
   const selectedItems = useMemo(() => supplies.filter((item) => item.quantity > 0), [supplies]);
+  const availableUnits = useMemo(() => normalizeItemUnits([
+    ...(Array.isArray(itemUnits) ? itemUnits : ITEM_UNITS),
+    ...supplies.map((item) => item.unit),
+  ]), [itemUnits, supplies]);
   const visibleItems = useMemo(() => supplies.filter((item) => (
     (filter === 'all' || item.quantity > 0) && item.name.toLowerCase().includes(query.trim().toLowerCase())
   )), [supplies, filter, query]);
   const assignedIds = getVendorAssignedMessageIds(supplier, orderMessages);
   const instructions = orderMessages.filter((message) => assignedIds.includes(message.id));
-  const quantityTotals = UNITS.map((unit) => ({
+  const quantityTotals = [...new Set(selectedItems.map((item) => normalizeItemUnit(item.unit)))].map((unit) => ({
     unit,
     quantity: selectedItems.filter((item) => normalizeItemUnit(item.unit) === unit)
       .reduce((total, item) => total + item.quantity, 0),
@@ -190,7 +253,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
   const saveLabel = effectiveSaveState === 'saving' ? 'Saving draft…'
     : effectiveSaveState === 'pending' ? 'Unsaved changes'
       : effectiveSaveState === 'offline' ? 'Offline · draft may not be synced'
-        : effectiveSaveState === 'error' ? 'Save failed · retry' : isDemo ? 'Preview draft saved locally' : 'Draft saved';
+        : effectiveSaveState === 'error' ? 'Save failed · retry' : isDemo ? 'Saved locally' : 'Draft saved';
 
   const handleBack = () => {
     void flushDraft();
@@ -248,13 +311,10 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
   return (
     <div className="order-composer">
       <div className="composer-header">
+        <button className="icon-button composer-back" aria-label="All suppliers" onClick={handleBack}><ArrowLeft size={21} /></button>
         <div className="composer-heading">
-          <button className="btn btn-ghost composer-back" onClick={handleBack}><ArrowLeft size={16} /> All suppliers</button>
-          <div className="composer-title"><h1>{supplier.name}</h1><span className="badge badge-accent">Draft order</span></div>
-          <p className="composer-description">Build your order, review the details, and share it with your supplier.</p>
-        </div>
-        <div className="composer-meta">
-          <span className="composer-date">{new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })}</span>
+          <h1>{supplier.name}</h1>
+          <p className="composer-item-count">{supplies.length} registered items</p>
           <button className={`save-status is-${effectiveSaveState}`} disabled={effectiveSaveState !== 'error'} onClick={() => { void flushDraft(); }} aria-live="polite">
             <SaveIcon size={14} /> {saveLabel}
           </button>
@@ -262,48 +322,43 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
       </div>
 
       <div className="composer-workspace">
-        <section className="catalog-panel" aria-labelledby="catalog-title">
-          <div className="panel-heading">
-            <div><span className="eyebrow">SUPPLIER CATALOG</span><h2 id="catalog-title">What do you need?</h2></div>
-            {isAdmin && <button className="btn btn-secondary btn-small" onClick={() => { setItemError(''); setShowAdd(true); }}><Plus size={16} /> Add item</button>}
-          </div>
+        <section className="catalog-panel" aria-label="Supplier catalog">
           <div className="catalog-toolbar">
             <div className="search-field"><Search size={17} /><input aria-label="Search supplier items" placeholder="Search items…" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
             <div className="catalog-tabs" aria-label="Filter catalog">
-              <button className={filter === 'all' ? 'active' : ''} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All items <span>{supplies.length}</span></button>
+              <button className={filter === 'all' ? 'active' : ''} aria-label="All items" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All <span>{supplies.length}</span></button>
               <button className={filter === 'selected' ? 'active' : ''} aria-pressed={filter === 'selected'} onClick={() => setFilter('selected')}>Selected <span>{selectedItems.length}</span></button>
             </div>
           </div>
-          <div className="catalog-table-heading"><span>ITEM / UNIT</span><span>QUANTITY</span></div>
           <div className="catalog-list">
             {visibleItems.map((item) => (
               <div className={`catalog-row ${item.quantity > 0 ? 'is-selected' : ''}`} key={item.id}>
-                <div className="item-index">{item.quantity > 0 ? <Check size={16} /> : String(supplies.findIndex((supply) => supply.id === item.id) + 1).padStart(2, '0')}</div>
-                <div className="item-detail">
-                  <span className="item-name">{item.name}</span>
-                  {isAdmin ? <select className="item-unit-select" aria-label={`Unit for ${item.name}`} value={normalizeItemUnit(item.unit)} onChange={(event) => changeSupplies((current) => current.map((entry) => entry.id === item.id ? { ...entry, unit: normalizeItemUnit(event.target.value) } : entry))}>
-                    {UNITS.map((unit) => <option value={unit} key={unit}>{unit}</option>)}
-                  </select> : <span className="item-unit">{normalizeItemUnit(item.unit)}</span>}
+                <div className="item-card-heading">
+                  <h2 className="item-name">{item.name}</h2>
+                  {isAdmin && <button className="icon-button item-delete" aria-label={`Delete ${item.name}`} onClick={() => setDeleteItem(item)}><Trash2 size={18} /></button>}
                 </div>
                 <div className="quantity-control">
-                  <button className="icon-button" aria-label={`Decrease ${item.name} quantity`} disabled={item.quantity === 0} onClick={() => { forgetQuantityDraft(item.id); changeQuantity(item.id, item.quantity - 1); }}><Minus size={15} /></button>
+                  <button className="icon-button" aria-label={`Decrease ${item.name} quantity`} disabled={item.quantity === 0} onPointerDown={(event) => startAdjustPress(event, item.id, -1)} onPointerUp={stopAdjustPress} onPointerCancel={stopAdjustPress} onLostPointerCapture={stopAdjustPress} onClick={(event) => handleStepperClick(event, item.id, -1)}><Minus size={21} /></button>
                   <input className="quantity-input" aria-label={`Quantity for ${item.name}`} type="number" inputMode="decimal" min="0" step="any" value={quantityDrafts[item.id] ?? item.quantity} onChange={(event) => {
                     const raw = event.target.value;
                     setQuantityDrafts((current) => ({ ...current, [item.id]: raw }));
                     changeQuantity(item.id, Number(raw));
                   }} onBlur={() => forgetQuantityDraft(item.id)} />
-                  <button className="icon-button" aria-label={`Increase ${item.name} quantity`} onClick={() => { forgetQuantityDraft(item.id); changeQuantity(item.id, item.quantity + 1); }}><Plus size={15} /></button>
+                  <button className="icon-button" aria-label={`Increase ${item.name} quantity`} onPointerDown={(event) => startAdjustPress(event, item.id, 1)} onPointerUp={stopAdjustPress} onPointerCancel={stopAdjustPress} onLostPointerCapture={stopAdjustPress} onClick={(event) => handleStepperClick(event, item.id, 1)}><Plus size={21} /></button>
+                  {isAdmin ? <select className="item-unit-select" aria-label={`Unit for ${item.name}`} title={normalizeItemUnit(item.unit)} value={normalizeItemUnit(item.unit)} onChange={(event) => changeSupplies((current) => current.map((entry) => entry.id === item.id ? { ...entry, unit: normalizeItemUnit(event.target.value) } : entry))}>
+                    {availableUnits.map((unit) => <option value={unit} key={unit}>{unit}</option>)}
+                  </select> : <span className="item-unit-badge" title={normalizeItemUnit(item.unit)}>{normalizeItemUnit(item.unit)}</span>}
                 </div>
-                {isAdmin && <button className="icon-button item-delete" aria-label={`Delete ${item.name}`} onClick={() => setDeleteItem(item)}><Trash2 size={15} /></button>}
               </div>
             ))}
             {visibleItems.length === 0 && <EmptyState icon={Package} title={query ? 'No matching items' : filter === 'selected' ? 'Your selection is empty' : 'Your catalog starts here'} description={query ? 'Try a different item name.' : filter === 'selected' ? 'Switch to All items and add a quantity to start your order.' : isAdmin ? 'Add the items you regularly order from this supplier.' : 'Ask your store admin to add items for this supplier.'} action={query ? <button className="btn btn-secondary" onClick={() => setQuery('')}>Clear search</button> : filter === 'selected' ? <button className="btn btn-secondary" onClick={() => setFilter('all')}>View all items</button> : null} />}
           </div>
-          <div className="catalog-footer"><span><Package size={14} /> {supplies.length} catalog items</span><span>Set quantities to add items to your order</span></div>
+          {isAdmin && <button className="catalog-add-item" onClick={() => { setItemError(''); setShowAdd(true); }}><Plus size={20} /> Add item</button>}
+          {supplies.length > 0 && <p className="catalog-hold-hint">Hold + or − to adjust faster. Tap the number to enter a quantity.</p>}
         </section>
 
-        <aside className="order-panel" aria-labelledby="order-summary-title">
-          <div className="order-panel-heading"><div className="order-summary-icon"><ShoppingBag size={19} /></div><div><span className="eyebrow">YOUR ORDER</span><h2 id="order-summary-title">Order summary</h2></div><span className="order-item-count">{selectedItems.length}</span></div>
+        <details className="order-panel" open>
+          <summary className="order-panel-heading"><ShoppingBag size={18} /><h2>Order details</h2><span className="order-item-count">{selectedItems.length}</span><ChevronDown size={17} className="order-details-chevron" /></summary>
           <div className="order-summary-caption"><span>{supplier.name}</span><button className="btn btn-ghost btn-small" disabled={!selectedItems.length} onClick={() => setShowClear(true)}>Clear</button></div>
           {selectedItems.length ? <div className="order-line-list" aria-live="polite">
             {selectedItems.map((item) => <div className="order-line" key={item.id}><div className="order-line-detail"><span>{item.name}</span><span className="item-unit">{normalizeItemUnit(item.unit)}</span></div><strong className="order-line-quantity">{displayQuantity(item.quantity)}</strong><button className="icon-button order-remove" aria-label={`Remove ${item.name} from order`} onClick={() => { forgetQuantityDraft(item.id); changeQuantity(item.id, 0); }}><Minus size={14} /></button></div>)}
@@ -316,19 +371,18 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
             saveDraftBackup(draftKey, suppliesRef.current, nextNote, dirtyRef.current);
           }} /></Field></div>
           <div className="order-totals"><span>Line items</span><strong>{String(selectedItems.length).padStart(2, '0')}</strong>{quantityTotals.length > 0 && <p>{quantityTotals.map((total) => `${displayQuantity(total.quantity)} ${total.unit}`).join(' · ')}</p>}</div>
-          <div className="order-actions"><button className="btn btn-primary" disabled={!selectedItems.length} onClick={reviewOrder}>Review order <ArrowUpRight size={18} /></button><p className="handoff-hint"><MessageCircle size={13} /> {isDemo ? 'Preview mode · compose and copy an order' : 'Review first. Send through WhatsApp.'}</p></div>
-        </aside>
+          <p className="handoff-hint order-detail-hint"><MessageCircle size={13} /> {isDemo ? 'Preview mode · compose and copy an order' : 'Review first. Send through WhatsApp.'}</p>
+        </details>
       </div>
 
-      {selectedItems.length > 0 && <div className="mobile-order-bar">
-        <div><strong>{selectedItems.length} {selectedItems.length === 1 ? 'item' : 'items'} selected</strong><span>Ready for review</span></div>
-        <button className="btn btn-primary" onClick={reviewOrder}>Review &amp; share <ArrowUpRight size={17} /></button>
+      {selectedItems.length > 0 && <div className="order-send-bar">
+        <button className="btn order-send-button" onClick={reviewOrder}><Send size={21} /><span>Review &amp; send</span><span className="order-send-count">{selectedItems.length} {selectedItems.length === 1 ? 'item' : 'items'}</span></button>
       </div>}
 
       {showAdd && <Modal title="Add catalog item" description="Create an item you can include in future supplier orders." onClose={() => setShowAdd(false)}>
         <form onSubmit={addItem} className="modal-form">
           <Field label="Item name"><input autoFocus className="input" aria-label="Item name" placeholder="e.g. Fresh tomatoes" maxLength={120} required value={newName} onChange={(event) => { setNewName(event.target.value); setItemError(''); }} /></Field>
-          <Field label="Order unit"><select className="input" aria-label="Order unit" value={newUnit} onChange={(event) => setNewUnit(event.target.value)}>{UNITS.map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></Field>
+          <Field label="Order unit"><select className="input" aria-label="Order unit" value={newUnit} onChange={(event) => setNewUnit(event.target.value)}>{availableUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></Field>
           {itemError && <p className="form-error" role="alert">{itemError}</p>}
           <div className="modal-actions"><button className="btn btn-secondary" type="button" onClick={() => setShowAdd(false)}>Cancel</button><button className="btn btn-primary" type="submit"><Plus size={16} /> Add item</button></div>
         </form>
@@ -341,7 +395,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
         <div className="review-meta"><span className="badge badge-accent">{selectedItems.length} line items</span><span>{supplier.phone ? `To ${supplier.phone}` : 'Choose the recipient in WhatsApp'}</span></div>
         <pre className="review-message" tabIndex={0} aria-label="Exact supplier order message">{reviewMessage}</pre>
         {isDemo && <p className="form-hint">This is a preview workspace. You can copy the message; WhatsApp handoff is available in your store.</p>}
-        <div className="review-actions"><button className="btn btn-secondary" onClick={copyOrder}>{copied ? <Check size={16} /> : <Clipboard size={16} />}{copied ? 'Copied' : 'Copy message'}</button><button className="btn btn-primary" disabled={isDemo} onClick={openWhatsApp}><MessageCircle size={17} /> Open WhatsApp <ArrowUpRight size={15} /></button></div>
+        <div className="review-actions"><button className="btn btn-secondary" onClick={copyOrder}>{copied ? <Check size={16} /> : <Clipboard size={16} />}{copied ? 'Copied' : 'Copy message'}</button><button className="btn order-whatsapp-button" disabled={isDemo} onClick={openWhatsApp}><MessageCircle size={17} /> Open WhatsApp <ArrowUpRight size={15} /></button></div>
         <p className="handoff-hint">Your draft stays available after opening WhatsApp.</p>
       </Modal>}
     </div>

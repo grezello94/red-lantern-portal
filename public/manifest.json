@@ -3,9 +3,9 @@
   "short_name": "Red Lantern",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#121212",
-  "theme_color": "#FF1744",
-  "orientation": "portrait",
+  "background_color": "#101114",
+  "theme_color": "#101114",
+  "orientation": "any",
   "icons": [
     {
       "src": "/redlanternsupplierportal.png",

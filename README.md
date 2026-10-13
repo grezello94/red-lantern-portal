@@ -2,6 +2,12 @@
 
 React/Vite supply management app backed by Firebase Firestore.
 
+The workspace is organized around suppliers and their item catalogs. Select quantities, add a note, review the exact order message, then open WhatsApp to send it. Optional supplier phone numbers route the message to the supplier's conversation. Opening WhatsApp does not mark an order as sent or clear its draft.
+
+Use **Explore the demo** on the sign-in screen to try supplier management and ordering with sample data. Demo changes stay in the browser and do not write to Firebase; WhatsApp handoff is disabled in demo mode.
+
+Supplier quantities sync to the existing Firestore `stores/{storeId}/vendors` records. Unsynced edits are backed up locally, and optional order notes are saved per supplier in the browser. Dark and light themes, staff/admin views, and mobile layouts are supported.
+
 ## Local Development
 
 ```sh

@@ -130,6 +130,7 @@ export async function saveStore(storeId, changes) {
 
 export async function addItemUnit(storeId, name) {
   if (typeof name !== 'string' || !name.trim()) throw new Error('Enter a unit name.');
+  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(name)) throw new Error('Use a readable unit name.');
   const unit = normalizeItemUnit(name);
   if (unit.length > 24) throw new Error('Unit names can contain up to 24 characters.');

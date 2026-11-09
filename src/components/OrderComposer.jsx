@@ -300,12 +300,50 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     }
   };
 
-  const openWhatsApp = () => {
-    if (isDemo || !reviewMessage) return;
-    const phone = String(supplier.phone || '').replace(/\D/g, '');
-    const target = phone ? `https://wa.me/${phone}?text=${encodeURIComponent(reviewMessage)}`
-      : `https://wa.me/?text=${encodeURIComponent(reviewMessage)}`;
-    window.open(target, '_blank', 'noopener,noreferrer');
+  const supplierPhone = supplier.phone ? String(supplier.phone).trim() : '';
+  const supplierPhoneDigits = supplierPhone.replace(/\D/g, '');
+  const hasSupplierPhone = supplierPhoneDigits.length >= 7;
+
+  const sendToWhatsApp = (targetPhone = null) => {
+    if (!reviewMessage) return;
+    void flushDraft();
+    try {
+      if (navigator.clipboard?.writeText) {
+        void navigator.clipboard.writeText(reviewMessage);
+        setCopied(true);
+      }
+    } catch {
+      // Clipboard write is an optional convenience; failure is non-fatal.
+    }
+    showToast?.('Opening WhatsApp…');
+
+    const cleanPhone = targetPhone ? String(targetPhone).replace(/\D/g, '') : '';
+    const encoded = encodeURIComponent(reviewMessage);
+    const appUrl = cleanPhone
+      ? `whatsapp://send?phone=${cleanPhone}&text=${encoded}`
+      : `whatsapp://send?text=${encoded}`;
+
+    window.location.href = appUrl;
+  };
+
+  const openWhatsAppWeb = async (targetPhone = null) => {
+    if (!reviewMessage) return;
+    void flushDraft();
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(reviewMessage);
+        setCopied(true);
+      }
+    } catch {
+      // Clipboard write is an optional convenience; failure is non-fatal.
+    }
+    const cleanPhone = targetPhone ? String(targetPhone).replace(/\D/g, '') : '';
+    const encoded = encodeURIComponent(reviewMessage);
+    const url = cleanPhone
+      ? `https://web.whatsapp.com/send?phone=${cleanPhone}&text=${encoded}`
+      : `https://web.whatsapp.com/`;
+    showToast?.('Order copied. Select your contact in WhatsApp Web and paste.');
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   return (
@@ -371,7 +409,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
             saveDraftBackup(draftKey, suppliesRef.current, nextNote, dirtyRef.current);
           }} /></Field></div>
           <div className="order-totals"><span>Line items</span><strong>{String(selectedItems.length).padStart(2, '0')}</strong>{quantityTotals.length > 0 && <p>{quantityTotals.map((total) => `${displayQuantity(total.quantity)} ${total.unit}`).join(' · ')}</p>}</div>
-          <p className="handoff-hint order-detail-hint"><MessageCircle size={13} /> {isDemo ? 'Preview mode · compose and copy an order' : 'Review first. Send through WhatsApp.'}</p>
+          <p className="handoff-hint order-detail-hint"><MessageCircle size={13} /> Review first. Send through WhatsApp.</p>
         </details>
       </div>
 
@@ -391,13 +429,53 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
       {deleteItem && <Modal title="Remove catalog item?" description={`“${deleteItem.name}” will be removed from this supplier’s catalog and current draft.`} onClose={() => setDeleteItem(null)}><div className="modal-actions"><button className="btn btn-secondary" onClick={() => setDeleteItem(null)}>Keep item</button><button className="btn btn-primary" onClick={() => { changeSupplies((current) => current.filter((item) => item.id !== deleteItem.id)); setDeleteItem(null); }}>Remove item</button></div></Modal>}
       {showClear && <Modal title="Clear this draft?" description="All quantities will return to zero. Your catalog and order note will stay available." onClose={() => setShowClear(false)}><div className="modal-actions"><button className="btn btn-secondary" onClick={() => setShowClear(false)}>Keep draft</button><button className="btn btn-primary" onClick={() => { changeSupplies((current) => current.map((item) => ({ ...item, quantity: 0 }))); setQuantityDrafts({}); setShowClear(false); }}>Clear quantities</button></div></Modal>}
 
-      {reviewMessage !== null && <Modal wide title="Ready for your supplier" description="Check the exact message below. WhatsApp opens with it prefilled, and you send it there." onClose={() => setReviewMessage(null)}>
-        <div className="review-meta"><span className="badge badge-accent">{selectedItems.length} line items</span><span>{supplier.phone ? `To ${supplier.phone}` : 'Choose the recipient in WhatsApp'}</span></div>
-        <pre className="review-message" tabIndex={0} aria-label="Exact supplier order message">{reviewMessage}</pre>
-        {isDemo && <p className="form-hint">This is a preview workspace. You can copy the message; WhatsApp handoff is available in your store.</p>}
-        <div className="review-actions"><button className="btn btn-secondary" onClick={copyOrder}>{copied ? <Check size={16} /> : <Clipboard size={16} />}{copied ? 'Copied' : 'Copy message'}</button><button className="btn order-whatsapp-button" disabled={isDemo} onClick={openWhatsApp}><MessageCircle size={17} /> Open WhatsApp <ArrowUpRight size={15} /></button></div>
-        <p className="handoff-hint">Your draft stays available after opening WhatsApp.</p>
-      </Modal>}
+      {reviewMessage !== null && (
+        <Modal
+          wide
+          title="Ready for your supplier"
+          description="Check your order message below. Tap Send to WhatsApp to open WhatsApp on your phone and choose who to send to."
+          onClose={() => setReviewMessage(null)}
+        >
+          <div className="review-meta">
+            <span className="badge badge-accent">{selectedItems.length} line items</span>
+            <span>Choose recipient in WhatsApp</span>
+          </div>
+          <pre className="review-message" tabIndex={0} aria-label="Exact supplier order message">{reviewMessage}</pre>
+          <div className="review-actions">
+            <button className="btn btn-secondary" type="button" onClick={copyOrder}>
+              {copied ? <Check size={16} /> : <Clipboard size={16} />}
+              {copied ? 'Copied' : 'Copy message'}
+            </button>
+            {hasSupplierPhone && (
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => sendToWhatsApp(supplierPhoneDigits)}
+                title={`Send directly to ${supplierPhone}`}
+              >
+                Send to {supplierPhone}
+              </button>
+            )}
+            <button
+              className="btn order-whatsapp-button"
+              type="button"
+              onClick={() => sendToWhatsApp(null)}
+            >
+              <MessageCircle size={17} />
+              Send to WhatsApp
+              <ArrowUpRight size={15} />
+            </button>
+          </div>
+          <p className="handoff-hint">Your draft stays saved. WhatsApp opens directly on your phone so you can choose who to send to.</p>
+          <button
+            type="button"
+            className="review-web-link"
+            onClick={() => openWhatsAppWeb(null)}
+          >
+            Need WhatsApp Web in browser? Open here
+          </button>
+        </Modal>
+      )}
     </div>
   );
 }

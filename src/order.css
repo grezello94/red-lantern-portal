@@ -98,6 +98,8 @@
 .review-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
 .order-whatsapp-button.btn { background: #00e676; border: 1px solid #00e676; color: #022713; font-weight: 800; }
 .order-whatsapp-button.btn:hover:not(:disabled) { background: #19f18a; border-color: #19f18a; color: #022713; }
+.review-web-link { display: block; margin: 10px auto 0; padding: 4px 8px; background: transparent; border: 0; color: var(--subtle); font-size: 11px; text-decoration: underline; cursor: pointer; transition: color .18s; }
+.review-web-link:hover { color: var(--text); }
 @keyframes composer-spin { to { transform: rotate(360deg); } }
 @media (min-width: 650px) {
   .composer-heading h1 { font-size: 27px; }

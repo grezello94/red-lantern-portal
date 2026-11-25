@@ -5,8 +5,9 @@ import {
   Search, Send, ShoppingBag, Sparkles, Trash2, Truck,
 } from 'lucide-react';
 import {
-  formatOrderMessage, getVendorAssignedMessageIds, ITEM_UNITS, normalizeItemUnit,
-  normalizeItemUnits, normalizeSupplies, updateSupplier,
+  formatOrderMessage, getItemReferencePhotos, getSupplierItemReferences,
+  getVendorAssignedMessageIds, ITEM_UNITS, normalizeItemUnit,
+  normalizeItemUnits, normalizeSupplies, saveItemReferencePhotos, updateSupplier,
 } from '../data.js';
 import { EmptyState, Field, Modal } from './ui.jsx';
 import {
@@ -69,20 +70,24 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
   const [aiClarityIssue, setAiClarityIssue] = useState('');
   const [aiSuggestions, setAiSuggestions] = useState([]);
   const [tempPhotoUrl, setTempPhotoUrl] = useState('');
-  const [showReferenceModal, setShowReferenceModal] = useState(false);
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [keyInput, setKeyInput] = useState(() => getStoredGeminiKey());
-  const [savingReference, setSavingReference] = useState(false);
-  const [referencePhotos, setReferencePhotos] = useState(() => {
+  const referencePhotos = useMemo(() => {
     if (Array.isArray(supplier.referencePhotos)) return supplier.referencePhotos;
     if (supplier.referencePhoto) return [supplier.referencePhoto];
     return [];
-  });
+  }, [supplier.referencePhoto, supplier.referencePhotos]);
+
+  // Item-level Benchmark References State
+  const [itemReferences, setItemReferences] = useState({});
+  const [activeItemRef, setActiveItemRef] = useState(null);
+  const [itemRefPhotosDraft, setItemRefPhotosDraft] = useState([]);
+  const [savingItemRef, setSavingItemRef] = useState(false);
 
   const fileInputRef = useRef(null);
-  const refInputRef = useRef(null);
-  const refReplaceInputRef = useRef(null);
-  const targetReplaceIndexRef = useRef(null);
+  const itemRefInputRef = useRef(null);
+  const itemRefReplaceInputRef = useRef(null);
+  const targetItemReplaceIndexRef = useRef(null);
 
   const suppliesRef = useRef(supplies);
   const dirtyRef = useRef(Boolean(initialDraft?.pending));
@@ -121,16 +126,6 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
       document.removeEventListener('visibilitychange', stopAdjustPress);
     };
   }, [stopAdjustPress]);
-
-  useEffect(() => {
-    if (Array.isArray(supplier.referencePhotos)) {
-      setReferencePhotos(supplier.referencePhotos);
-    } else if (supplier.referencePhoto) {
-      setReferencePhotos([supplier.referencePhoto]);
-    } else {
-      setReferencePhotos([]);
-    }
-  }, [supplier.referencePhotos, supplier.referencePhoto]);
 
   useEffect(() => { toastRef.current = showToast; }, [showToast]);
 
@@ -189,6 +184,21 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     });
     return () => { cancelled = true; };
   }, [supplier.supplies]);
+
+  useEffect(() => {
+    let mounted = true;
+    getSupplierItemReferences(storeId, supplier.id).then((refs) => {
+      if (mounted && refs) {
+        setItemReferences(refs);
+      }
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, [storeId, supplier.id]);
+
+  const trainedCount = useMemo(() => supplies.filter((it) => {
+    const photos = itemReferences[it.id];
+    return (Array.isArray(photos) && photos.length > 0) || (Number(it.referenceCount) > 0);
+  }).length, [supplies, itemReferences]);
 
   useEffect(() => {
     const connectionChanged = () => {
@@ -347,6 +357,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
         supplier: { ...supplier, supplies: suppliesRef.current },
         currentPhotoBase64: compressed.base64,
         referencePhotos,
+        itemReferences,
       });
 
       if (analysisResult?.isUnclear) {
@@ -397,93 +408,115 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     showToast?.('AI order suggestions applied to draft.');
   };
 
-  const handleReferencePhotoSelected = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    if (referencePhotos.length >= 4) {
-      showToast?.('Maximum 4 reference angles reached. Delete an existing angle to add a new one.');
-      return;
-    }
-    setSavingReference(true);
-    try {
-      const compressed = await compressImageToBase64(file, 880, 0.68);
-      const updatedList = [...referencePhotos, compressed.dataUrl];
-      await updateSupplier(storeId, supplier.id, {
-        referencePhotos: updatedList,
-        referencePhoto: updatedList[0] || null,
-      });
-      supplier.referencePhotos = updatedList;
-      supplier.referencePhoto = updatedList[0] || null;
-      setReferencePhotos(updatedList);
-      showToast?.(`Reference angle #${updatedList.length} of 4 saved.`);
-    } catch {
-      showToast?.('Failed to save reference photo.');
-    } finally {
-      setSavingReference(false);
+  const openItemRefModal = async (item) => {
+    setActiveItemRef(item);
+    const existing = itemReferences[item.id] || [];
+    setItemRefPhotosDraft(existing);
+    if (!existing.length) {
+      try {
+        const fetched = await getItemReferencePhotos(storeId, supplier.id, item.id);
+        if (fetched.length) {
+          setItemRefPhotosDraft(fetched);
+          setItemReferences((prev) => ({ ...prev, [item.id]: fetched }));
+        }
+      } catch {
+        // ignore
+      }
     }
   };
 
-  const handleReplacePhotoSelected = async (event) => {
+  const handleItemRefPhotoSelected = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
-    const idx = targetReplaceIndexRef.current;
-    if (!file || idx === null || idx === undefined || idx < 0 || idx >= referencePhotos.length) return;
-    setSavingReference(true);
+    if (!file || !activeItemRef) return;
+    if (itemRefPhotosDraft.length >= 5) {
+      showToast?.('Maximum 5 reference angles reached for this item.');
+      return;
+    }
+    setSavingItemRef(true);
     try {
-      const compressed = await compressImageToBase64(file, 880, 0.68);
-      const updatedList = [...referencePhotos];
-      updatedList[idx] = compressed.dataUrl;
-      await updateSupplier(storeId, supplier.id, {
-        referencePhotos: updatedList,
-        referencePhoto: updatedList[0] || null,
-      });
-      supplier.referencePhotos = updatedList;
-      supplier.referencePhoto = updatedList[0] || null;
-      setReferencePhotos(updatedList);
-      showToast?.(`Reference angle #${idx + 1} updated with new photo.`);
+      const compressed = await compressImageToBase64(file, 480, 0.70);
+      const updated = [...itemRefPhotosDraft, compressed.dataUrl];
+      setItemRefPhotosDraft(updated);
+      setItemReferences((prev) => ({ ...prev, [activeItemRef.id]: updated }));
+      await saveItemReferencePhotos(storeId, supplier.id, activeItemRef.id, updated);
+
+      const updatedSupplies = suppliesRef.current.map((it) => (it.id === activeItemRef.id ? { ...it, referenceCount: updated.length } : it));
+      suppliesRef.current = updatedSupplies;
+      setSupplies(updatedSupplies);
+      void updateSupplier(storeId, supplier.id, { supplies: updatedSupplies });
+
+      showToast?.(`Angle #${updated.length} saved for ${activeItemRef.name}.`);
+    } catch {
+      showToast?.('Failed to save item reference photo.');
+    } finally {
+      setSavingItemRef(false);
+    }
+  };
+
+  const handleItemReplacePhotoSelected = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    const idx = targetItemReplaceIndexRef.current;
+    if (!file || !activeItemRef || idx === null || idx === undefined || idx < 0 || idx >= itemRefPhotosDraft.length) return;
+    setSavingItemRef(true);
+    try {
+      const compressed = await compressImageToBase64(file, 480, 0.70);
+      const updated = [...itemRefPhotosDraft];
+      updated[idx] = compressed.dataUrl;
+      setItemRefPhotosDraft(updated);
+      setItemReferences((prev) => ({ ...prev, [activeItemRef.id]: updated }));
+      await saveItemReferencePhotos(storeId, supplier.id, activeItemRef.id, updated);
+
+      showToast?.(`Angle #${idx + 1} updated with new photo for ${activeItemRef.name}.`);
     } catch {
       showToast?.('Failed to update reference photo.');
     } finally {
-      setSavingReference(false);
-      targetReplaceIndexRef.current = null;
+      setSavingItemRef(false);
+      targetItemReplaceIndexRef.current = null;
     }
   };
 
-  const removeReferencePhotoAtIndex = async (indexToRemove) => {
-    setSavingReference(true);
+  const removeItemRefAtIndex = async (idx) => {
+    if (!activeItemRef) return;
+    const updated = itemRefPhotosDraft.filter((_, i) => i !== idx);
+    setItemRefPhotosDraft(updated);
+    setItemReferences((prev) => ({ ...prev, [activeItemRef.id]: updated }));
+    setSavingItemRef(true);
     try {
-      const updatedList = referencePhotos.filter((_, idx) => idx !== indexToRemove);
-      await updateSupplier(storeId, supplier.id, {
-        referencePhotos: updatedList,
-        referencePhoto: updatedList[0] || null,
-      });
-      supplier.referencePhotos = updatedList;
-      supplier.referencePhoto = updatedList[0] || null;
-      setReferencePhotos(updatedList);
-      showToast?.(`Reference angle removed (${updatedList.length}/4 remaining).`);
+      await saveItemReferencePhotos(storeId, supplier.id, activeItemRef.id, updated);
+      const updatedSupplies = suppliesRef.current.map((it) => (it.id === activeItemRef.id ? { ...it, referenceCount: updated.length } : it));
+      suppliesRef.current = updatedSupplies;
+      setSupplies(updatedSupplies);
+      void updateSupplier(storeId, supplier.id, { supplies: updatedSupplies });
+      showToast?.('Angle removed.');
     } catch {
-      showToast?.('Failed to remove reference photo.');
+      showToast?.('Failed to delete angle.');
     } finally {
-      setSavingReference(false);
+      setSavingItemRef(false);
     }
   };
 
-  const clearAllReferencePhotos = async () => {
-    setSavingReference(true);
+  const resetAllItemRefs = async () => {
+    if (!activeItemRef) return;
+    setItemRefPhotosDraft([]);
+    setItemReferences((prev) => {
+      const next = { ...prev };
+      delete next[activeItemRef.id];
+      return next;
+    });
+    setSavingItemRef(true);
     try {
-      await updateSupplier(storeId, supplier.id, {
-        referencePhotos: [],
-        referencePhoto: null,
-      });
-      supplier.referencePhotos = [];
-      delete supplier.referencePhoto;
-      setReferencePhotos([]);
-      showToast?.('All reference photos cleared. You can now snap new angles.');
+      await saveItemReferencePhotos(storeId, supplier.id, activeItemRef.id, []);
+      const updatedSupplies = suppliesRef.current.map((it) => (it.id === activeItemRef.id ? { ...it, referenceCount: 0 } : it));
+      suppliesRef.current = updatedSupplies;
+      setSupplies(updatedSupplies);
+      void updateSupplier(storeId, supplier.id, { supplies: updatedSupplies });
+      showToast?.(`All reference photos cleared for ${activeItemRef.name}.`);
     } catch {
-      showToast?.('Failed to clear reference photos.');
+      showToast?.('Failed to reset reference photos.');
     } finally {
-      setSavingReference(false);
+      setSavingItemRef(false);
     }
   };
 
@@ -586,38 +619,34 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
             <button
               className="ai-banner-scan-action"
               type="button"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                const key = getStoredGeminiKey();
+                if (!key) {
+                  setShowKeyModal(true);
+                  return;
+                }
+                fileInputRef.current?.click();
+              }}
               title="Snap crate or shelf photo to detect low stock"
             >
               <div className="ai-banner-icon-bubble">
                 <Camera size={18} />
               </div>
               <div className="ai-banner-info">
-                <strong className="ai-banner-title">Scan Stock with AI</strong>
-                <p className="ai-banner-desc">Auto-detect low items from photo</p>
+                <div className="ai-banner-title-row">
+                  <strong className="ai-banner-title">Scan Stock with AI</strong>
+                  <span className="badge badge-accent badge-master-tag"><Sparkles size={11} /> GEMINI AI</span>
+                </div>
+                <p className="ai-banner-desc">Snap crates or shelves · auto-detects low items</p>
               </div>
             </button>
 
-            <div className="ai-banner-divider" aria-hidden="true" />
-
-            <button
-              className={`ai-banner-ref-action ${referencePhotos.length > 0 ? 'is-configured' : ''}`}
-              type="button"
-              onClick={() => setShowReferenceModal(true)}
-              title="Manage 3-4 benchmark reference photos"
-            >
-              <div className="ai-banner-ref-content">
-                <div className="ai-banner-ref-icon">
-                  <ImageIcon size={16} />
-                </div>
-                <div className="ai-banner-ref-text">
-                  <span className="ai-banner-ref-label">Reference</span>
-                  <span className="ai-banner-ref-count">
-                    {referencePhotos.length > 0 ? `${referencePhotos.length}/4 angles` : '0/4 set'}
-                  </span>
-                </div>
-              </div>
-            </button>
+            <div className="ai-banner-right-status">
+              <span className={`ai-banner-ref-status ${trainedCount > 0 ? 'is-trained' : ''}`} title="Items with 3-5 benchmark photos set">
+                <Sparkles size={13} />
+                <span>{trainedCount} of {supplies.length} items trained</span>
+              </span>
+            </div>
 
             <input
               ref={fileInputRef}
@@ -627,34 +656,36 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
               style={{ display: 'none' }}
               onChange={handleScanPhotoSelected}
             />
-            <input
-              ref={refInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              style={{ display: 'none' }}
-              onChange={handleReferencePhotoSelected}
-            />
-            <input
-              ref={refReplaceInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              style={{ display: 'none' }}
-              onChange={handleReplacePhotoSelected}
-            />
           </div>
 
           <div className="catalog-list">
-            {visibleItems.map((item) => (
-              <div className={`catalog-row ${item.quantity > 0 ? 'is-selected' : ''}`} key={item.id}>
-                <div className="item-card-heading">
-                  <div className="item-name-group">
-                    <h2 className="item-name">{item.name}</h2>
-                    {Number(item.targetQuantity) > 0 && <span className="item-target-badge" title="Standard target capacity">Target: {item.targetQuantity} {item.unit}</span>}
+            {visibleItems.map((item) => {
+              const itemRefs = itemReferences[item.id];
+              const refCount = (Array.isArray(itemRefs) && itemRefs.length > 0)
+                ? itemRefs.length
+                : (Number(item.referenceCount) || 0);
+
+              return (
+                <div className={`catalog-row ${item.quantity > 0 ? 'is-selected' : ''}`} key={item.id}>
+                  <div className="item-card-heading">
+                    <div className="item-name-group">
+                      <h2 className="item-name">{item.name}</h2>
+                      {Number(item.targetQuantity) > 0 && <span className="item-target-badge" title="Standard target capacity">Target: {item.targetQuantity} {item.unit}</span>}
+                    </div>
+                    <div className="item-header-actions">
+                      <button
+                        type="button"
+                        className={`item-ref-pill ${refCount > 0 ? 'has-refs' : 'no-refs'}`}
+                        onClick={() => openItemRefModal(item)}
+                        title={refCount > 0 ? `${refCount} benchmark photos set. Click to view or edit.` : `Add 3-5 benchmark photos (standing, lying flat, tilted) for ${item.name}`}
+                        aria-label={`Benchmark photos for ${item.name}`}
+                      >
+                        <Camera size={13} />
+                        <span>{refCount > 0 ? `${refCount}/5 refs` : '+Ref'}</span>
+                      </button>
+                      {isAdmin && <button className="icon-button item-delete" aria-label={`Delete ${item.name}`} onClick={() => setDeleteItem(item)}><Trash2 size={18} /></button>}
+                    </div>
                   </div>
-                  {isAdmin && <button className="icon-button item-delete" aria-label={`Delete ${item.name}`} onClick={() => setDeleteItem(item)}><Trash2 size={18} /></button>}
-                </div>
                 <div className="quantity-control">
                   <button className="icon-button" aria-label={`Decrease ${item.name} quantity`} disabled={item.quantity === 0} onPointerDown={(event) => startAdjustPress(event, item.id, -1)} onPointerUp={stopAdjustPress} onPointerCancel={stopAdjustPress} onLostPointerCapture={stopAdjustPress} onClick={(event) => handleStepperClick(event, item.id, -1)}><Minus size={21} /></button>
                   <input className="quantity-input" aria-label={`Quantity for ${item.name}`} type="number" inputMode="decimal" min="0" step="any" value={quantityDrafts[item.id] ?? item.quantity} onChange={(event) => {
@@ -668,7 +699,8 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
                   </select> : <span className="item-unit-badge" title={normalizeItemUnit(item.unit)}>{normalizeItemUnit(item.unit)}</span>}
                 </div>
               </div>
-            ))}
+            );
+          })}
             {visibleItems.length === 0 && <EmptyState icon={Package} title={query ? 'No matching items' : filter === 'selected' ? 'Your selection is empty' : 'Your catalog starts here'} description={query ? 'Try a different item name.' : filter === 'selected' ? 'Switch to All items and add a quantity to start your order.' : isAdmin ? 'Add the items you regularly order from this supplier.' : 'Ask your store admin to add items for this supplier.'} action={query ? <button className="btn btn-secondary" onClick={() => setQuery('')}>Clear search</button> : filter === 'selected' ? <button className="btn btn-secondary" onClick={() => setFilter('all')}>View all items</button> : null} />}
           </div>
           {isAdmin && <button className="catalog-add-item" onClick={() => { setItemError(''); setShowAdd(true); }}><Plus size={20} /> Add item</button>}
@@ -868,33 +900,34 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
         </Modal>
       )}
 
-      {showReferenceModal && (
+      {activeItemRef && (
         <Modal
           wide
-          title="Supplier Reference Benchmark"
-          description={`Teach AI how ${supplier.name}'s items look when full. Capture 3 to 4 angles (e.g. standing upright, lying flat, tilted, or stacked in crates).`}
-          onClose={() => setShowReferenceModal(false)}
+          title={`Benchmark: ${activeItemRef.name}`}
+          description={`Teach AI how "${activeItemRef.name}" looks when stocked. Add 3 to 5 photos (standing upright, lying flat, front label, crate view). AI uses these for 100% precision.`}
+          onClose={() => { if (!savingItemRef) setActiveItemRef(null); }}
         >
           <div className="reference-modal-wrap">
             <div className="reference-status-card">
               <div className="reference-status-info">
                 <div className="reference-count-badge">
                   <Sparkles size={14} />
-                  <span>{referencePhotos.length} of 4 angles saved</span>
+                  <span>{itemRefPhotosDraft.length} of 5 angles saved</span>
                 </div>
-                <p className="reference-status-tip">
-                  {referencePhotos.length === 0 && '⚠️ No benchmark photos yet. Add 3-4 photos showing packets standing, lying flat, and crate views.'}
-                  {referencePhotos.length > 0 && referencePhotos.length < 3 && 'Good start! Add 1-2 more angles (e.g. packets lying flat or tilted) for optimal accuracy.'}
-                  {referencePhotos.length >= 3 && '✅ Optimal reference set. AI can recognize items whether standing upright or lying flat.'}
+                <p className="reference-status-desc">
+                  {itemRefPhotosDraft.length === 0
+                    ? 'No benchmark photos yet. Add 3-5 photos showing packets standing, lying flat, and crate views.'
+                    : itemRefPhotosDraft.length < 3
+                      ? 'Add at least 3 angles for optimal AI accuracy.'
+                      : 'Benchmark complete. AI can recognize this item across any angle or orientation!'}
                 </p>
               </div>
-              {referencePhotos.length > 0 && (
+              {itemRefPhotosDraft.length > 0 && (
                 <button
                   type="button"
-                  className="btn btn-ghost btn-small reference-clear-all"
-                  disabled={savingReference}
-                  onClick={clearAllReferencePhotos}
-                  title="Delete all reference photos (useful when packaging or bottles change)"
+                  className="reference-reset-btn"
+                  onClick={resetAllItemRefs}
+                  disabled={savingItemRef}
                 >
                   <Trash2 size={13} />
                   <span>Reset all</span>
@@ -903,18 +936,18 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
             </div>
 
             <div className="reference-grid">
-              {referencePhotos.map((photoUrl, index) => (
+              {itemRefPhotosDraft.map((photoUrl, index) => (
                 <div className="reference-card" key={index}>
                   <div className="reference-img-container">
-                    <img src={photoUrl} alt={`Reference angle ${index + 1}`} className="reference-thumbnail" />
+                    <img src={photoUrl} alt={`Angle ${index + 1}`} className="reference-thumbnail" />
                     <div className="reference-card-overlay">
                       <span className="reference-angle-tag">Angle #{index + 1}</span>
                       <button
                         type="button"
                         className="icon-button reference-delete-btn"
                         title="Delete this angle"
-                        disabled={savingReference}
-                        onClick={() => removeReferencePhotoAtIndex(index)}
+                        disabled={savingItemRef}
+                        onClick={() => removeItemRefAtIndex(index)}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -922,15 +955,15 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
                   </div>
                   <div className="reference-card-footer">
                     <span className="reference-angle-hint">
-                      {index === 0 ? 'Front / Standing' : index === 1 ? 'Lying flat / Side' : index === 2 ? 'Crate / Shelf view' : 'Alternate view'}
+                      {index === 0 ? 'Front / Standing' : index === 1 ? 'Lying flat / Side' : index === 2 ? 'Front label / Brand' : index === 3 ? 'Crate / Shelf view' : 'Alternate view'}
                     </span>
                     <button
                       type="button"
                       className="reference-retake-btn"
-                      disabled={savingReference}
+                      disabled={savingItemRef}
                       onClick={() => {
-                        targetReplaceIndexRef.current = index;
-                        refReplaceInputRef.current?.click();
+                        targetItemReplaceIndexRef.current = index;
+                        itemRefReplaceInputRef.current?.click();
                       }}
                     >
                       Change
@@ -939,25 +972,27 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
                 </div>
               ))}
 
-              {referencePhotos.length < 4 && (
+              {itemRefPhotosDraft.length < 5 && (
                 <button
                   type="button"
                   className="reference-add-slot"
-                  disabled={savingReference}
-                  onClick={() => refInputRef.current?.click()}
+                  disabled={savingItemRef}
+                  onClick={() => itemRefInputRef.current?.click()}
                 >
                   <div className="reference-add-icon">
-                    {savingReference ? <LoaderCircle size={22} className="spin" /> : <Plus size={24} />}
+                    {savingItemRef ? <LoaderCircle size={22} className="spin" /> : <Plus size={24} />}
                   </div>
-                  <strong>Add Angle #{referencePhotos.length + 1}</strong>
+                  <strong>Add Angle #{itemRefPhotosDraft.length + 1}</strong>
                   <span>
-                    {referencePhotos.length === 0
+                    {itemRefPhotosDraft.length === 0
                       ? 'Standing upright'
-                      : referencePhotos.length === 1
+                      : itemRefPhotosDraft.length === 1
                         ? 'Lying flat / tilted'
-                        : referencePhotos.length === 2
-                          ? 'Crate / shelf view'
-                          : 'Alternate angle'}
+                        : itemRefPhotosDraft.length === 2
+                          ? 'Front label / Brand'
+                          : itemRefPhotosDraft.length === 3
+                            ? 'Crate / shelf view'
+                            : 'Alternate angle'}
                   </span>
                 </button>
               )}
@@ -974,13 +1009,30 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
             </div>
 
             <div className="modal-actions" style={{ marginTop: 10 }}>
-              <button className="btn btn-primary" type="button" onClick={() => setShowReferenceModal(false)}>
+              <button className="btn btn-primary" type="button" onClick={() => setActiveItemRef(null)}>
                 <Check size={16} /> Done
               </button>
             </div>
           </div>
         </Modal>
       )}
+
+      <input
+        ref={itemRefInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={handleItemRefPhotoSelected}
+      />
+      <input
+        ref={itemRefReplaceInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={handleItemReplacePhotoSelected}
+      />
 
       {showKeyModal && (
         <Modal

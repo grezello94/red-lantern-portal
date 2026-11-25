@@ -74,6 +74,7 @@ export async function compressImageToBase64(file, maxDimension = 1200, quality =
  */
 export async function analyzeShelfPhoto({
   apiKey, supplier, currentPhotoBase64, referencePhotos = [], referencePhotoBase64 = null,
+  itemReferences = {},
 }) {
   const activeKey = apiKey || getStoredGeminiKey();
   if (!activeKey) {
@@ -105,7 +106,7 @@ CRITICAL RULES FOR 100% ACCURACY IN DENSE PANTRY CONDITIONS:
    - Multi-Cubby & Multi-Shelf Scanning: The photo may capture multiple wooden shelves, cubbies, or floor piles containing items from multiple suppliers. Focus STRICTLY on items belonging to "${supplier.name}"'s registered catalog above. Ignore unrelated items (e.g. paper boxes, napkins, or other ingredients not in this catalog).
    - Overlapping / Piled Pouches & Packets: Masala packets, spice pouches, and dal bags are often stacked in loose piles or lying flat over one another. Inspect the pile layer by layer. Identify visible packets by their distinct brand logos, header typography, colored borders, and text labels (e.g. Garam Masala, Cumin, Chinese Pepper, Kitchen King, Arhar Dal). Count each distinct visible packet even if partially overlapped or tilted.
    - Deep Rows & Stacked Bottles: Bottles of sauces, vinegar, syrups, and essence are frequently arranged in deep rows (front, middle, back) and sometimes bottles lie horizontally on top of standing bottle caps. Count both front rows, visible bottles in back rows through gaps, and any horizontal bottles lying on top. Use cap colors (e.g. green vs pink caps) and label colors to distinguish variants.
-   - Grounding with Benchmark Reference Photos: If reference benchmark photos are provided, compare the current stock photo against them to verify how each item looks when standing upright, lying flat, tilted, or stacked in crates.
+   - Grounding with Benchmark Reference Photos: Compare visible packets and bottles against the item benchmark reference photos provided below (showing standing, lying flat, tilted, or crate angles) to identify items with 100% precision.
 
 3. ACCURATE REORDER CALCULATION:
    - Count all visible remaining units for each catalog item across all shelves in the photo.
@@ -139,12 +140,36 @@ Respond ONLY with a valid JSON object conforming to this exact schema:
 
   const parts = [{ text: systemPrompt }];
 
-  if (refList.length > 0) {
+  // 1. Attach item-level benchmark references (priority)
+  let attachedItemRefCount = 0;
+  if (itemReferences && typeof itemReferences === 'object') {
+    suppliesList.forEach((item) => {
+      const photos = itemReferences[item.id] || (Array.isArray(item.referencePhotos) ? item.referencePhotos : []);
+      if (Array.isArray(photos) && photos.length > 0) {
+        attachedItemRefCount += photos.length;
+        parts.push({
+          text: `ITEM BENCHMARK REFERENCE: "${item.name}" (ID: "${item.id}") — The following ${photos.length} photos show "${item.name}" in various states (standing upright, lying flat, packaging details, crate view):`,
+        });
+        photos.slice(0, 5).forEach((refImg, idx) => {
+          parts.push({ text: `"${item.name}" benchmark angle #${idx + 1}:` });
+          parts.push({
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: refImg.replace(/^data:image\/[a-z]+;base64,/, ''),
+            },
+          });
+        });
+      }
+    });
+  }
+
+  // 2. Attach general supplier-level benchmark photos if no item-level photos exist
+  if (attachedItemRefCount === 0 && refList.length > 0) {
     parts.push({
-      text: `REFERENCE BENCHMARK PHOTOS (${refList.length} photos showing how items look when stocked, from different angles or standing/laying states):`,
+      text: `SUPPLIER GENERAL BENCHMARK PHOTOS (${refList.length} photos showing how items look when stocked, from different angles or standing/laying states):`,
     });
     refList.forEach((refImg, index) => {
-      parts.push({ text: `Reference photo ${index + 1} of ${refList.length}:` });
+      parts.push({ text: `General reference photo ${index + 1} of ${refList.length}:` });
       parts.push({
         inlineData: {
           mimeType: 'image/jpeg',
@@ -234,7 +259,7 @@ Respond ONLY with a valid JSON object conforming to this exact schema:
  * low items to their respective suppliers.
  */
 export async function analyzeWholeRackPhoto({
-  apiKey, suppliers = [], currentPhotoBase64,
+  apiKey, suppliers = [], currentPhotoBase64, itemReferences = {},
 }) {
   const activeKey = apiKey || getStoredGeminiKey();
   if (!activeKey) {
@@ -268,6 +293,7 @@ CRITICAL RULES FOR 100% ACCURATE WHOLE-RACK ROUTING:
 2. DEEP SCANNING ACROSS MULTIPLE CUBBIES & SHELVES:
    - Overlapping / Piled Pouches: For spice masalas, dal pouches, and powders piled on shelves, scan through the layers. Match logos, header typography, and colored banners (e.g. Starzing Garam Masala, Cumin, Chinese Pepper, Kitchen King, Fortune Dal).
    - Rows & Stacked Bottles: For sauces, vinegar, syrups, and essence bottles, inspect front rows, visible bottles in back rows, and any horizontal bottles lying on top of bottle caps.
+   - Grounding with Benchmark Reference Photos: Match visible items against the item benchmark photos attached below to accurately distinguish items even if packets are buried, rotated, or upside down.
    - Separate Items by Supplier: For each item identified on the shelves, locate which supplier catalog it belongs to above.
 
 3. REORDER CALCULATION PER SUPPLIER:
@@ -301,24 +327,49 @@ Respond ONLY with a valid JSON object conforming to this exact schema:
 
   const parts = [{ text: systemPrompt }];
 
-  // Include benchmark reference photos if suppliers have them
+  // Include item-level benchmark reference photos for exact visual ground-truthing
   validSuppliers.forEach((sup) => {
-    const refs = Array.isArray(sup.referencePhotos) && sup.referencePhotos.length
-      ? sup.referencePhotos
-      : (sup.referencePhoto ? [sup.referencePhoto] : []);
-    if (refs.length > 0) {
-      parts.push({
-        text: `BENCHMARK REFERENCE PHOTOS for Supplier "${sup.name}":`,
-      });
-      refs.slice(0, 2).forEach((refImg, idx) => {
-        parts.push({ text: `${sup.name} reference photo ${idx + 1}:` });
+    const supRefs = (itemReferences && itemReferences[sup.id]) || {};
+    let itemPhotosFound = 0;
+
+    (sup.supplies || []).forEach((item) => {
+      const photos = supRefs[item.id] || itemReferences[item.id] || (Array.isArray(item.referencePhotos) ? item.referencePhotos : []);
+      if (Array.isArray(photos) && photos.length > 0) {
+        itemPhotosFound += photos.length;
         parts.push({
-          inlineData: {
-            mimeType: 'image/jpeg',
-            data: refImg.replace(/^data:image\/[a-z]+;base64,/, ''),
-          },
+          text: `ITEM BENCHMARK: "${item.name}" (Supplier: "${sup.name}", ID: "${item.id}") — ${photos.length} reference angles:`,
         });
-      });
+        photos.slice(0, 5).forEach((refImg, idx) => {
+          parts.push({ text: `"${item.name}" angle #${idx + 1}:` });
+          parts.push({
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: refImg.replace(/^data:image\/[a-z]+;base64,/, ''),
+            },
+          });
+        });
+      }
+    });
+
+    // Fallback to supplier-level general reference if no item-level photos exist
+    if (itemPhotosFound === 0) {
+      const generalRefs = Array.isArray(sup.referencePhotos) && sup.referencePhotos.length
+        ? sup.referencePhotos
+        : (sup.referencePhoto ? [sup.referencePhoto] : []);
+      if (generalRefs.length > 0) {
+        parts.push({
+          text: `BENCHMARK REFERENCE PHOTOS for Supplier "${sup.name}":`,
+        });
+        generalRefs.slice(0, 2).forEach((refImg, idx) => {
+          parts.push({ text: `${sup.name} reference photo ${idx + 1}:` });
+          parts.push({
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: refImg.replace(/^data:image\/[a-z]+;base64,/, ''),
+            },
+          });
+        });
+      }
     }
   });
 

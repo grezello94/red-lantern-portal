@@ -23,6 +23,7 @@ import {
   createSupplier,
   deleteSupplier,
   formatOrderMessage,
+  getAllStoreItemReferences,
   getVendorAssignedMessageIds,
   updateSupplier,
 } from '../data';
@@ -184,12 +185,16 @@ export default function SupplierDashboard({
     setRackResults([]);
 
     try {
-      const compressedBase64 = await compressImageToBase64(file, 1280, 0.74);
+      const [itemReferences, compressedBase64] = await Promise.all([
+        getAllStoreItemReferences(storeId, suppliers.map((s) => s.id)),
+        compressImageToBase64(file, 1280, 0.74),
+      ]);
       const activeKey = getStoredGeminiKey();
       const analysis = await analyzeWholeRackPhoto({
         apiKey: activeKey,
         suppliers,
         currentPhotoBase64: compressedBase64,
+        itemReferences,
       });
 
       if (analysis.isUnclear) {

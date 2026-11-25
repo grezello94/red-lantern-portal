@@ -1,4 +1,4 @@
-import { collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, setDoc, arrayUnion } from 'firebase/firestore';
+import { collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, setDoc, getDoc, getDocs, arrayUnion } from 'firebase/firestore';
 import { db } from './firebase';
 
 export const DEFAULT_ORDER_MESSAGES = [
@@ -148,3 +148,79 @@ export async function addItemUnit(storeId, name) {
   // Atomic additions preserve units added by another admin at the same time.
   return setDoc(doc(db, 'stores', storeId), { itemUnits: arrayUnion(...ITEM_UNITS, unit) }, { merge: true });
 }
+
+export async function saveItemReferencePhotos(storeId, supplierId, itemId, photos = []) {
+  if (storeId === 'demo') {
+    const data = readDemo();
+    if (!data.itemReferences) data.itemReferences = {};
+    const key = `${supplierId}_${itemId}`;
+    if (photos.length > 0) {
+      data.itemReferences[key] = photos;
+    } else {
+      delete data.itemReferences[key];
+    }
+    writeDemo(data);
+    return;
+  }
+  const refDoc = doc(db, 'stores', storeId, 'vendors', supplierId, 'item_references', itemId);
+  if (photos.length > 0) {
+    await setDoc(refDoc, { itemId, supplierId, photos, updatedAt: Date.now() });
+  } else {
+    await deleteDoc(refDoc);
+  }
+}
+
+export async function getItemReferencePhotos(storeId, supplierId, itemId) {
+  if (storeId === 'demo') {
+    const data = readDemo();
+    return data.itemReferences?.[`${supplierId}_${itemId}`] || [];
+  }
+  try {
+    const refDoc = doc(db, 'stores', storeId, 'vendors', supplierId, 'item_references', itemId);
+    const snap = await getDoc(refDoc);
+    if (snap.exists()) {
+      const d = snap.data();
+      return Array.isArray(d?.photos) ? d.photos : [];
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getSupplierItemReferences(storeId, supplierId) {
+  if (storeId === 'demo') {
+    const data = readDemo();
+    const refs = {};
+    Object.entries(data.itemReferences || {}).forEach(([key, photos]) => {
+      if (key.startsWith(`${supplierId}_`)) {
+        const itemId = key.slice(supplierId.length + 1);
+        refs[itemId] = photos;
+      }
+    });
+    return refs;
+  }
+  try {
+    const colRef = collection(db, 'stores', storeId, 'vendors', supplierId, 'item_references');
+    const snap = await getDocs(colRef);
+    const refs = {};
+    snap.forEach((docEntry) => {
+      const d = docEntry.data();
+      if (d?.itemId && Array.isArray(d?.photos)) {
+        refs[d.itemId] = d.photos;
+      }
+    });
+    return refs;
+  } catch {
+    return {};
+  }
+}
+
+export async function getAllStoreItemReferences(storeId, supplierIds = []) {
+  const result = {};
+  for (const sId of supplierIds) {
+    result[sId] = await getSupplierItemReferences(storeId, sId);
+  }
+  return result;
+}
+

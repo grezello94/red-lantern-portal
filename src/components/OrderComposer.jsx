@@ -339,7 +339,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     setAiSuggestions([]);
 
     try {
-      const compressed = await compressImageToBase64(file, 960, 0.70);
+      const compressed = await compressImageToBase64(file, 1200, 0.74);
       setTempPhotoUrl(compressed.dataUrl);
 
       const analysisResult = await analyzeShelfPhoto({

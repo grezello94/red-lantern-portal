@@ -24,7 +24,7 @@ export function saveStoredGeminiKey(key) {
  * Compress an image file to a lightweight JPEG Base64 string directly in browser memory.
  * Maximum dimension 960px, JPEG quality 0.72 (~50-80KB).
  */
-export async function compressImageToBase64(file, maxDimension = 960, quality = 0.72) {
+export async function compressImageToBase64(file, maxDimension = 1200, quality = 0.74) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = reject;
@@ -91,26 +91,31 @@ export async function analyzeShelfPhoto({
   }).join('\n');
 
   const systemPrompt = `You are an expert restaurant inventory specialist for "Red Lantern Restaurant".
-We are inspecting current pantry / crates / stock for supplier: "${supplier.name}".
+We are inspecting current kitchen pantry shelves / cubbies / crates / stock for supplier: "${supplier.name}".
 
 Registered items in this supplier catalog:
 ${catalogSummary}
 
-CRITICAL RULES FOR 100% ACCURACY & ZERO GUESSWORK:
+CRITICAL RULES FOR 100% ACCURACY IN DENSE PANTRY CONDITIONS:
 1. PHOTO CLARITY CHECK FIRST:
-   - If the photo is too blurry, dark, shaky, obstructed, out-of-focus, or has severe glare preventing you from identifying labels or counting items accurately, set "photoQuality": "unclear" and describe the specific problem in "clarityIssue" (e.g. "Image has motion blur making sauce labels unreadable" or "Pantry is too dark to count bottles in crates").
+   - If the photo is too blurry, dark, shaky, or out-of-focus preventing you from reading labels or counting items accurately, set "photoQuality": "unclear" and describe the specific problem in "clarityIssue" (e.g. "Image has motion blur making spice packet labels unreadable").
    - If the photo is sufficiently clear to inspect, set "photoQuality": "clear" and "clarityIssue": "".
-2. VISUAL GROUNDING WITH REFERENCE BENCHMARK PHOTOS:
-   - Carefully cross-reference the bottles, packets, labels, cap colors, branding logos, and pouch shapes in the CURRENT stock photo against each REFERENCE photo.
-   - Recognize that items may be standing upright, tilted, lying flat, stacked, or upside down. Use the reference angles to identify them in any orientation.
-   - Do NOT guess or hallucinate items that are not visible in the photo. If an item from the catalog is not visible in the current photo, set "level": "Not visible / Unknown" and "suggestedQuantity": 0.
+
+2. DEEP SPATIAL & LAYER SCANNING (REAL RESTAURANT PANTRY RULES):
+   - Multi-Cubby & Multi-Shelf Scanning: The photo may capture multiple wooden shelves, cubbies, or floor piles containing items from multiple suppliers. Focus STRICTLY on items belonging to "${supplier.name}"'s registered catalog above. Ignore unrelated items (e.g. paper boxes, napkins, or other ingredients not in this catalog).
+   - Overlapping / Piled Pouches & Packets: Masala packets, spice pouches, and dal bags are often stacked in loose piles or lying flat over one another. Inspect the pile layer by layer. Identify visible packets by their distinct brand logos, header typography, colored borders, and text labels (e.g. Garam Masala, Cumin, Chinese Pepper, Kitchen King, Arhar Dal). Count each distinct visible packet even if partially overlapped or tilted.
+   - Deep Rows & Stacked Bottles: Bottles of sauces, vinegar, syrups, and essence are frequently arranged in deep rows (front, middle, back) and sometimes bottles lie horizontally on top of standing bottle caps. Count both front rows, visible bottles in back rows through gaps, and any horizontal bottles lying on top. Use cap colors (e.g. green vs pink caps) and label colors to distinguish variants.
+   - Grounding with Benchmark Reference Photos: If reference benchmark photos are provided, compare the current stock photo against them to verify how each item looks when standing upright, lying flat, tilted, or stacked in crates.
+
 3. ACCURATE REORDER CALCULATION:
-   - Count visible remaining units.
-   - If an item has a "standard full capacity" (targetQuantity / par level), calculate replenishment: Math.max(0, targetQuantity - remainingCount).
-   - If an item is Empty (0 visible or crate empty), suggest its standard capacity or a reasonable replenish quantity.
-   - If an item is Plenty (>80% full), suggestedQuantity MUST be 0.
+   - Count all visible remaining units for each catalog item across all shelves in the photo.
+   - If an item has a "standard full capacity" (targetQuantity / par level), calculate replenishment needed: Math.max(0, targetQuantity - remainingCount).
+   - If an item is Empty (0 visible or crate section empty), suggest its standard capacity or a reasonable replenish quantity.
+   - If an item is Plenty (>80% full / at par), suggestedQuantity MUST be 0.
+   - If an item from the catalog is kept in a different section NOT shown in this photo, set "level": "Not visible / Unknown" and "suggestedQuantity": 0.
+
 4. REASONING:
-   - Provide a concise 1-sentence explanation of what you see (e.g., "Found 2 bottles standing and 1 lying down; 7 needed to reach par level of 10").
+   - Provide a concise 1-sentence explanation of what you see (e.g., "Found 4 bottles in front row, 3 in back row, 1 lying flat on top; 2 needed to reach par of 10" or "Counted 3 packets in spice pile").
 
 Respond ONLY with a valid JSON object conforming to this exact schema:
 {

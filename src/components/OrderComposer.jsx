@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, ArrowLeft, ArrowUpRight, Camera, Check, CheckCircle2, Clipboard, CloudOff,
-  CircleAlert, ChevronDown, Image as ImageIcon, LoaderCircle, MessageCircle, Minus, Package, Plus,
-  Search, Send, ShoppingBag, Sparkles, Trash2, Truck,
+  AlertTriangle, ArrowLeft, ArrowUpRight, Camera, Check, CheckCircle2, ChevronDown,
+  ChevronLeft, ChevronRight, CircleAlert, Clipboard, CloudOff, Image as ImageIcon,
+  LoaderCircle, MessageCircle, Minus, Package, Plus, Search, Send, ShoppingBag,
+  Sparkles, Trash2, Truck,
 } from 'lucide-react';
 import {
   formatOrderMessage, getItemReferencePhotos, getSupplierItemReferences,
@@ -425,18 +426,31 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     }
   };
 
+  const activeItemIndex = useMemo(() => {
+    if (!activeItemRef) return -1;
+    return supplies.findIndex((it) => it.id === activeItemRef.id);
+  }, [activeItemRef, supplies]);
+
+  const prevItem = activeItemIndex > 0 ? supplies[activeItemIndex - 1] : null;
+  const nextItem = activeItemIndex >= 0 && activeItemIndex < supplies.length - 1 ? supplies[activeItemIndex + 1] : null;
+
   const handleItemRefPhotoSelected = async (event) => {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files || []);
     event.target.value = '';
-    if (!file || !activeItemRef) return;
-    if (itemRefPhotosDraft.length >= 5) {
+    if (!files.length || !activeItemRef) return;
+    const remainingSlots = 5 - itemRefPhotosDraft.length;
+    if (remainingSlots <= 0) {
       showToast?.('Maximum 5 reference angles reached for this item.');
       return;
     }
+    const filesToProcess = files.slice(0, remainingSlots);
     setSavingItemRef(true);
     try {
-      const compressed = await compressImageToBase64(file, 480, 0.70);
-      const updated = [...itemRefPhotosDraft, compressed.dataUrl];
+      const compressedList = await Promise.all(
+        filesToProcess.map((f) => compressImageToBase64(f, 480, 0.70))
+      );
+      const newUrls = compressedList.map((c) => c.dataUrl);
+      const updated = [...itemRefPhotosDraft, ...newUrls];
       setItemRefPhotosDraft(updated);
       setItemReferences((prev) => ({ ...prev, [activeItemRef.id]: updated }));
       await saveItemReferencePhotos(storeId, supplier.id, activeItemRef.id, updated);
@@ -446,9 +460,9 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
       setSupplies(updatedSupplies);
       void updateSupplier(storeId, supplier.id, { supplies: updatedSupplies });
 
-      showToast?.(`Angle #${updated.length} saved for ${activeItemRef.name}.`);
+      showToast?.(`${newUrls.length} reference ${newUrls.length === 1 ? 'photo' : 'photos'} saved for ${activeItemRef.name}.`);
     } catch {
-      showToast?.('Failed to save item reference photo.');
+      showToast?.('Failed to save item reference photos.');
     } finally {
       setSavingItemRef(false);
     }
@@ -642,10 +656,23 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
             </button>
 
             <div className="ai-banner-right-status">
-              <span className={`ai-banner-ref-status ${trainedCount > 0 ? 'is-trained' : ''}`} title="Items with 3-5 benchmark photos set">
+              <button
+                type="button"
+                className={`ai-banner-ref-status-btn ${trainedCount === supplies.length && supplies.length > 0 ? 'is-complete' : trainedCount > 0 ? 'is-trained' : ''}`}
+                onClick={() => {
+                  const firstUntrained = supplies.find((it) => (itemReferences[it.id]?.length || it.referenceCount || 0) === 0);
+                  openItemRefModal(firstUntrained || supplies[0]);
+                }}
+                title="Click to train or review benchmark photos for each item"
+              >
                 <Sparkles size={13} />
-                <span>{trainedCount} of {supplies.length} items trained</span>
-              </span>
+                <span>
+                  {trainedCount === supplies.length && supplies.length > 0
+                    ? `All ${supplies.length} items trained (4-5 refs)`
+                    : `${trainedCount} of ${supplies.length} items trained`}
+                </span>
+                <ChevronRight size={13} />
+              </button>
             </div>
 
             <input
@@ -903,8 +930,8 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
       {activeItemRef && (
         <Modal
           wide
-          title={`Benchmark: ${activeItemRef.name}`}
-          description={`Teach AI how "${activeItemRef.name}" looks when stocked. Add 3 to 5 photos (standing upright, lying flat, front label, crate view). AI uses these for 100% precision.`}
+          title={`[Item ${activeItemIndex + 1} of ${supplies.length}] ${activeItemRef.name}`}
+          description={`Teach AI how "${activeItemRef.name}" looks when stocked. Add 4 to 5 photos (standing upright, lying flat, front label, crate view). AI uses these for 100% precision.`}
           onClose={() => { if (!savingItemRef) setActiveItemRef(null); }}
         >
           <div className="reference-modal-wrap">
@@ -916,10 +943,10 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
                 </div>
                 <p className="reference-status-desc">
                   {itemRefPhotosDraft.length === 0
-                    ? 'No benchmark photos yet. Add 3-5 photos showing packets standing, lying flat, and crate views.'
-                    : itemRefPhotosDraft.length < 3
-                      ? 'Add at least 3 angles for optimal AI accuracy.'
-                      : 'Benchmark complete. AI can recognize this item across any angle or orientation!'}
+                    ? 'No benchmark photos yet. Add 4-5 photos showing packets standing, lying flat, and crate views (you can select multiple photos at once!).'
+                    : itemRefPhotosDraft.length < 4
+                      ? `Saved ${itemRefPhotosDraft.length} angles. Add ${4 - itemRefPhotosDraft.length} more to reach 4-5 references.`
+                      : '✅ Benchmark complete! AI can recognize this item across any angle or orientation.'}
                 </p>
               </div>
               {itemRefPhotosDraft.length > 0 && (
@@ -994,6 +1021,9 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
                             ? 'Crate / shelf view'
                             : 'Alternate angle'}
                   </span>
+                  <small style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '4px' }}>
+                    Select 1 or multiple photos
+                  </small>
                 </button>
               )}
             </div>
@@ -1008,10 +1038,43 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
               </div>
             </div>
 
-            <div className="modal-actions" style={{ marginTop: 10 }}>
-              <button className="btn btn-primary" type="button" onClick={() => setActiveItemRef(null)}>
-                <Check size={16} /> Done
+            <div className="modal-actions" style={{ marginTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <button className="btn btn-secondary" type="button" onClick={() => setActiveItemRef(null)}>
+                Close
               </button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {prevItem && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => openItemRefModal(prevItem)}
+                    disabled={savingItemRef}
+                    title={`Previous item: ${prevItem.name}`}
+                  >
+                    <ChevronLeft size={16} /> Prev Item
+                  </button>
+                )}
+                {nextItem ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => openItemRefModal(nextItem)}
+                    disabled={savingItemRef}
+                    title={`Train next item: ${nextItem.name}`}
+                  >
+                    <span>Next Item ({nextItem.name})</span>
+                    <ChevronRight size={16} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => setActiveItemRef(null)}
+                  >
+                    <Check size={16} /> All {supplies.length} Items Done
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </Modal>
@@ -1021,6 +1084,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
         ref={itemRefInputRef}
         type="file"
         accept="image/*"
+        multiple
         capture="environment"
         style={{ display: 'none' }}
         onChange={handleItemRefPhotoSelected}

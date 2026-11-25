@@ -201,7 +201,7 @@ export default function SupplierDashboard({
         setRackClarityIssue(analysis.clarityIssue || 'Photo is too blurry or dark. Please retake.');
       }
 
-      // Sanitize and partition suppliers with reorder needs
+      // Sanitize and partition suppliers with reorder needs and undetected items
       const analyzedSuppliers = (analysis.suppliers || []).map((supResult) => {
         const matchingSupplier = suppliers.find((s) => s.id === supResult.supplierId)
           || suppliers.find((s) => s.name?.toLowerCase() === supResult.supplierName?.toLowerCase());
@@ -215,14 +215,26 @@ export default function SupplierDashboard({
           reason: it.reason || '',
         }));
 
+        const detectedIds = new Set(items.map((it) => it.id));
+        const undetected = (matchingSupplier?.supplies || [])
+          .filter((catItem) => !detectedIds.has(catItem.id))
+          .map((catItem) => ({
+            id: catItem.id,
+            name: catItem.name,
+            unit: catItem.unit || 'PIECES',
+            targetQuantity: catItem.targetQuantity || null,
+            orderQuantity: 0,
+          }));
+
         return {
           supplierId: matchingSupplier ? matchingSupplier.id : supResult.supplierId,
           supplierName: matchingSupplier ? matchingSupplier.name : supResult.supplierName,
           phone: matchingSupplier ? matchingSupplier.phone : '',
           rawSupplier: matchingSupplier,
           items,
+          undetected,
         };
-      }).filter((s) => s.items.some((it) => it.suggestedQuantity > 0));
+      }).filter((s) => s.items.some((it) => it.suggestedQuantity > 0) || s.undetected.length > 0);
 
       setRackResults(analyzedSuppliers);
     } catch (err) {
@@ -230,6 +242,29 @@ export default function SupplierDashboard({
     } finally {
       setRackAnalyzing(false);
     }
+  };
+
+  const adjustMasterUndetectedQty = (supplierId, itemId, delta) => {
+    setRackResults((prev) => prev.map((sup) => {
+      if (sup.supplierId !== supplierId) return sup;
+      const updated = (sup.undetected || []).map((item) => {
+        if (item.id !== itemId) return item;
+        return { ...item, orderQuantity: Math.max(0, (item.orderQuantity || 0) + delta) };
+      });
+      return { ...sup, undetected: updated };
+    }));
+  };
+
+  const addMasterUndetectedToOrder = (supplierId, itemId) => {
+    setRackResults((prev) => prev.map((sup) => {
+      if (sup.supplierId !== supplierId) return sup;
+      const updated = (sup.undetected || []).map((item) => {
+        if (item.id !== itemId) return item;
+        const defaultQty = Number(item.targetQuantity) > 0 ? Number(item.targetQuantity) : 1;
+        return { ...item, orderQuantity: defaultQty };
+      });
+      return { ...sup, undetected: updated };
+    }));
   };
 
   const adjustMasterItemQty = (supplierId, itemId, delta) => {
@@ -261,12 +296,21 @@ export default function SupplierDashboard({
       return;
     }
 
-    const itemsToOrder = supplierGroup.items.filter((it) => it.suggestedQuantity > 0).map((it) => ({
+    const detectedToOrder = (supplierGroup.items || []).filter((it) => it.suggestedQuantity > 0).map((it) => ({
       id: it.id,
       name: it.name,
       quantity: it.suggestedQuantity,
       unit: it.unit,
     }));
+
+    const undetectedToOrder = (supplierGroup.undetected || []).filter((it) => it.orderQuantity > 0).map((it) => ({
+      id: it.id,
+      name: it.name,
+      quantity: it.orderQuantity,
+      unit: it.unit,
+    }));
+
+    const itemsToOrder = [...detectedToOrder, ...undetectedToOrder];
 
     if (itemsToOrder.length === 0) {
       showToast(`No items to reorder for ${rawSupplier.name}.`);
@@ -313,13 +357,26 @@ export default function SupplierDashboard({
         const currentSupplies = Array.isArray(rawSupplier.supplies) ? [...rawSupplier.supplies] : [];
         let modified = false;
 
-        supGroup.items.forEach((scannedItem) => {
+        (supGroup.items || []).forEach((scannedItem) => {
           if (scannedItem.suggestedQuantity > 0) {
             const idx = currentSupplies.findIndex((s) => s.id === scannedItem.id || s.name?.toLowerCase() === scannedItem.name?.toLowerCase());
             if (idx >= 0) {
               currentSupplies[idx] = {
                 ...currentSupplies[idx],
                 quantity: scannedItem.suggestedQuantity,
+              };
+              modified = true;
+            }
+          }
+        });
+
+        (supGroup.undetected || []).forEach((undItem) => {
+          if (undItem.orderQuantity > 0) {
+            const idx = currentSupplies.findIndex((s) => s.id === undItem.id || s.name?.toLowerCase() === undItem.name?.toLowerCase());
+            if (idx >= 0) {
+              currentSupplies[idx] = {
+                ...currentSupplies[idx],
+                quantity: undItem.orderQuantity,
               };
               modified = true;
             }
@@ -614,6 +671,45 @@ export default function SupplierDashboard({
                             </div>
                           ))}
                         </div>
+
+                        {/* USER-REQUESTED QUESTION: UNDETECTED CATALOG ITEMS */}
+                        {supGroup.undetected && supGroup.undetected.length > 0 && (
+                          <div className="master-undetected-box">
+                            <div className="master-undetected-header">
+                              <AlertTriangle size={15} className="ai-undetected-icon" />
+                              <span>{supGroup.undetected.length} items from {supGroup.supplierName} not detected on rack. Add to order?</span>
+                            </div>
+                            <div className="master-undetected-list">
+                              {supGroup.undetected.map((undItem) => (
+                                <div className={`master-undetected-row ${undItem.orderQuantity > 0 ? 'is-included' : ''}`} key={undItem.id}>
+                                  <div className="master-undetected-info">
+                                    <span className="master-undetected-name">{undItem.name}</span>
+                                    <span className="badge badge-undetected">Not seen</span>
+                                  </div>
+                                  {undItem.orderQuantity > 0 ? (
+                                    <div className="ai-stepper">
+                                      <button type="button" onClick={() => adjustMasterUndetectedQty(supGroup.supplierId, undItem.id, -1)} aria-label="Decrease">
+                                        <Minus size={13} />
+                                      </button>
+                                      <span className="master-stepper-val-text">{undItem.orderQuantity} {undItem.unit}</span>
+                                      <button type="button" onClick={() => adjustMasterUndetectedQty(supGroup.supplierId, undItem.id, 1)} aria-label="Increase">
+                                        <Plus size={13} />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm master-add-undetected-btn"
+                                      onClick={() => addMasterUndetectedToOrder(supGroup.supplierId, undItem.id)}
+                                    >
+                                      <Plus size={12} /> Add to Order
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

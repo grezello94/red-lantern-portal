@@ -70,6 +70,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
   const [aiError, setAiError] = useState('');
   const [aiClarityIssue, setAiClarityIssue] = useState('');
   const [aiSuggestions, setAiSuggestions] = useState([]);
+  const [aiUndetectedItems, setAiUndetectedItems] = useState([]);
   const [tempPhotoUrl, setTempPhotoUrl] = useState('');
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [keyInput, setKeyInput] = useState(() => getStoredGeminiKey());
@@ -348,6 +349,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     setAiError('');
     setAiClarityIssue('');
     setAiSuggestions([]);
+    setAiUndetectedItems([]);
 
     try {
       const compressed = await compressImageToBase64(file, 1200, 0.74);
@@ -368,19 +370,38 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
       }
 
       const rawList = Array.isArray(analysisResult?.suggestions) ? analysisResult.suggestions : (Array.isArray(analysisResult) ? analysisResult : []);
-      const mapped = rawList.map((sug) => {
-        const item = suppliesRef.current.find((it) => it.id === sug.id || it.name.toLowerCase() === String(sug.name).toLowerCase());
-        return {
-          id: item?.id || sug.id,
-          name: item?.name || sug.name,
-          unit: item?.unit || sug.unit || 'PIECES',
-          level: sug.level || 'Low',
-          suggestedQuantity: Number.isFinite(Number(sug.suggestedQuantity)) ? Math.max(0, Number(sug.suggestedQuantity)) : 0,
-          reason: sug.reason || '',
-        };
+      const allCatalog = suppliesRef.current;
+      const detected = [];
+      const undetected = [];
+
+      allCatalog.forEach((catItem) => {
+        const found = rawList.find((sug) => sug.id === catItem.id || String(sug.name || '').toLowerCase() === catItem.name.toLowerCase());
+        const levelStr = String(found?.level || '').toLowerCase();
+        const isNotVisible = !found || levelStr.includes('not visible') || levelStr.includes('unknown');
+
+        if (isNotVisible) {
+          undetected.push({
+            id: catItem.id,
+            name: catItem.name,
+            unit: catItem.unit || 'PIECES',
+            targetQuantity: catItem.targetQuantity || null,
+            orderQuantity: 0,
+            reason: found?.reason || 'Not detected on scanned shelves or crates.',
+          });
+        } else {
+          detected.push({
+            id: catItem.id,
+            name: catItem.name,
+            unit: catItem.unit || 'PIECES',
+            level: found.level || 'Low',
+            suggestedQuantity: Number.isFinite(Number(found.suggestedQuantity)) ? Math.max(0, Number(found.suggestedQuantity)) : 0,
+            reason: found.reason || '',
+          });
+        }
       });
 
-      setAiSuggestions(mapped);
+      setAiSuggestions(detected);
+      setAiUndetectedItems(undetected);
     } catch (err) {
       setAiError(err.message || 'Failed to analyze shelf photo.');
     } finally {
@@ -397,16 +418,46 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     }));
   };
 
+  const adjustUndetectedItemQty = (id, delta) => {
+    setAiUndetectedItems((prev) => prev.map((item) => {
+      if (item.id === id) {
+        const currentQty = item.orderQuantity || 0;
+        const newQty = Math.max(0, currentQty + delta);
+        return { ...item, orderQuantity: newQty };
+      }
+      return item;
+    }));
+  };
+
+  const addUndetectedToOrder = (id) => {
+    setAiUndetectedItems((prev) => prev.map((item) => {
+      if (item.id === id) {
+        const defaultQty = Number(item.targetQuantity) > 0 ? Number(item.targetQuantity) : 1;
+        return { ...item, orderQuantity: defaultQty };
+      }
+      return item;
+    }));
+  };
+
   const applyAISuggestions = () => {
+    let appliedCount = 0;
     aiSuggestions.forEach((sug) => {
       if (sug.suggestedQuantity > 0) {
         changeQuantity(sug.id, sug.suggestedQuantity);
+        appliedCount += 1;
+      }
+    });
+    aiUndetectedItems.forEach((undetected) => {
+      if (undetected.orderQuantity > 0) {
+        changeQuantity(undetected.id, undetected.orderQuantity);
+        appliedCount += 1;
       }
     });
     setTempPhotoUrl('');
     setAiSuggestions([]);
+    setAiUndetectedItems([]);
     setShowAIScan(false);
-    showToast?.('AI order suggestions applied to draft.');
+    showToast?.(`Applied ${appliedCount} items to order draft.`);
   };
 
   const openItemRefModal = async (item) => {
@@ -850,57 +901,127 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
               </div>
             )}
 
-            {!aiAnalyzing && !aiError && !aiClarityIssue && aiSuggestions.length > 0 && (
+            {!aiAnalyzing && !aiError && !aiClarityIssue && (aiSuggestions.length > 0 || aiUndetectedItems.length > 0) && (
               <>
-                <div className="ai-scan-status">
-                  <span>Found {aiSuggestions.filter((s) => s.suggestedQuantity > 0).length} items needing restock</span>
-                  <span className="ai-scan-privacy">100% verified against references</span>
-                </div>
+                {aiSuggestions.filter((s) => s.suggestedQuantity > 0).length > 0 && (
+                  <div className="ai-detected-section">
+                    <div className="ai-scan-status">
+                      <span>Detected on shelves ({aiSuggestions.filter((s) => s.suggestedQuantity > 0).length} need restock)</span>
+                      <span className="ai-scan-privacy">100% verified against references</span>
+                    </div>
 
-                <div className="ai-suggestion-list">
-                  {aiSuggestions.map((item) => {
-                    const levelStr = String(item.level || '').toLowerCase();
-                    const levelClass = levelStr.includes('empty')
-                      ? 'empty'
-                      : levelStr.includes('low')
-                        ? 'low'
-                        : levelStr.includes('half')
-                          ? 'half'
-                          : 'plenty';
-                    return (
-                      <div className={`ai-suggestion-card ${item.suggestedQuantity > 0 ? 'is-ordering' : ''}`} key={item.id}>
-                        <div className="ai-suggestion-header">
-                          <strong>{item.name}</strong>
-                          <span className={`ai-suggestion-badge ${levelClass}`}>{item.level}</span>
-                        </div>
-                        {item.reason && <p className="ai-suggestion-reason">{item.reason}</p>}
-                        <div className="ai-suggestion-control">
-                          <span>Order quantity ({item.unit}):</span>
-                          <div className="ai-stepper">
-                            <button
-                              type="button"
-                              aria-label={`Decrease suggested ${item.name}`}
-                              disabled={item.suggestedQuantity === 0}
-                              onClick={() => adjustAiSuggestionQty(item.id, -1)}
-                            >
-                              <Minus size={15} />
-                            </button>
-                            <span>{displayQuantity(item.suggestedQuantity)}</span>
-                            <button
-                              type="button"
-                              aria-label={`Increase suggested ${item.name}`}
-                              onClick={() => adjustAiSuggestionQty(item.id, 1)}
-                            >
-                              <Plus size={15} />
-                            </button>
+                    <div className="ai-suggestion-list">
+                      {aiSuggestions.map((item) => {
+                        const levelStr = String(item.level || '').toLowerCase();
+                        const levelClass = levelStr.includes('empty')
+                          ? 'empty'
+                          : levelStr.includes('low')
+                            ? 'low'
+                            : levelStr.includes('half')
+                              ? 'half'
+                              : 'plenty';
+                        return (
+                          <div className={`ai-suggestion-card ${item.suggestedQuantity > 0 ? 'is-ordering' : ''}`} key={item.id}>
+                            <div className="ai-suggestion-header">
+                              <strong>{item.name}</strong>
+                              <span className={`ai-suggestion-badge ${levelClass}`}>{item.level}</span>
+                            </div>
+                            {item.reason && <p className="ai-suggestion-reason">{item.reason}</p>}
+                            <div className="ai-suggestion-control">
+                              <span>Order quantity ({item.unit}):</span>
+                              <div className="ai-stepper">
+                                <button
+                                  type="button"
+                                  aria-label={`Decrease suggested ${item.name}`}
+                                  disabled={item.suggestedQuantity === 0}
+                                  onClick={() => adjustAiSuggestionQty(item.id, -1)}
+                                >
+                                  <Minus size={15} />
+                                </button>
+                                <span>{displayQuantity(item.suggestedQuantity)}</span>
+                                <button
+                                  type="button"
+                                  aria-label={`Increase suggested ${item.name}`}
+                                  onClick={() => adjustAiSuggestionQty(item.id, 1)}
+                                >
+                                  <Plus size={15} />
+                                </button>
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
-                <div className="modal-actions">
+                {aiSuggestions.length > 0 && aiSuggestions.filter((s) => s.suggestedQuantity > 0).length === 0 && (
+                  <div className="ai-all-full-note">
+                    <CheckCircle2 size={20} className="accent-mint" />
+                    <span>All detected shelf items appear well stocked.</span>
+                  </div>
+                )}
+
+                {/* USER-REQUESTED QUESTION: UNDETECTED ITEMS PROMPT */}
+                {aiUndetectedItems.length > 0 && (
+                  <div className="ai-undetected-box">
+                    <div className="ai-undetected-header">
+                      <div className="ai-undetected-title-row">
+                        <AlertTriangle size={18} className="ai-undetected-icon" />
+                        <strong>Items Not Detected in Photo ({aiUndetectedItems.length})</strong>
+                      </div>
+                      <p className="ai-undetected-question">
+                        The following {aiUndetectedItems.length === 1 ? 'item was' : 'items were'} not seen or detected on the scanned shelves.
+                        <strong> Do you want to place an order for any of them as well?</strong>
+                      </p>
+                    </div>
+
+                    <div className="ai-undetected-list">
+                      {aiUndetectedItems.map((item) => (
+                        <div className={`ai-undetected-row ${item.orderQuantity > 0 ? 'is-included' : ''}`} key={item.id}>
+                          <div className="ai-undetected-info">
+                            <span className="ai-undetected-name">{item.name}</span>
+                            <div className="ai-undetected-sub">
+                              <span className="badge badge-undetected">Not seen on shelf</span>
+                              {item.targetQuantity && <span className="ai-undetected-target">Par: {item.targetQuantity} {item.unit}</span>}
+                            </div>
+                          </div>
+
+                          {item.orderQuantity > 0 ? (
+                            <div className="ai-stepper">
+                              <button
+                                type="button"
+                                aria-label={`Decrease ${item.name}`}
+                                onClick={() => adjustUndetectedItemQty(item.id, -1)}
+                              >
+                                <Minus size={15} />
+                              </button>
+                              <span className="ai-stepper-val-text">{displayQuantity(item.orderQuantity)} {item.unit}</span>
+                              <button
+                                type="button"
+                                aria-label={`Increase ${item.name}`}
+                                onClick={() => adjustUndetectedItemQty(item.id, 1)}
+                              >
+                                <Plus size={15} />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm ai-add-undetected-btn"
+                              onClick={() => addUndetectedToOrder(item.id)}
+                            >
+                              <Plus size={13} />
+                              <span>Add to Order</span>
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="modal-actions" style={{ marginTop: 18 }}>
                   <button
                     className="btn btn-secondary"
                     type="button"
@@ -911,17 +1032,10 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
                   </button>
                   <button className="btn btn-secondary" type="button" onClick={() => { setShowAIScan(false); setTempPhotoUrl(''); }}>Cancel</button>
                   <button className="btn btn-primary" type="button" onClick={applyAISuggestions}>
-                    <Check size={16} /> Apply to Order
+                    <Check size={16} /> Apply {aiSuggestions.filter((s) => s.suggestedQuantity > 0).length + aiUndetectedItems.filter((s) => s.orderQuantity > 0).length > 0 ? `(${aiSuggestions.filter((s) => s.suggestedQuantity > 0).length + aiUndetectedItems.filter((s) => s.orderQuantity > 0).length})` : ''} to Order
                   </button>
                 </div>
               </>
-            )}
-
-            {!aiAnalyzing && !aiError && !aiClarityIssue && aiSuggestions.length > 0 && aiSuggestions.filter((s) => s.suggestedQuantity > 0).length === 0 && (
-              <div className="ai-all-full-note">
-                <CheckCircle2 size={20} className="accent-mint" />
-                <span>All items in this photo appear well stocked. No items need restocking.</span>
-              </div>
             )}
           </div>
         </Modal>

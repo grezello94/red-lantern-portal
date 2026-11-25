@@ -96,28 +96,37 @@ We are inspecting current pantry / crates / stock for supplier: "${supplier.name
 Registered items in this supplier catalog:
 ${catalogSummary}
 
-Your mission:
-1. Examine the provided "Current Stock Photo" of the crates/shelf/pantry. Notice that bottles or packets may be standing upright, tilted, lying flat, stacked, or grouped.
-2. If "Reference Photos" are provided (showing items from different angles or orientations like standing upright vs lying flat or in crates), use them as the visual benchmark. These benchmark photos show how items look in real restaurant conditions (e.g. sauce pouches lying on their side, bottles seen from the cap or label).
-3. For each catalog item, determine:
-   - "level": One of "Empty", "Low (~20% left)", "Half (~50% left)", "Plenty (>80%)", or "Not visible / Unknown".
-   - "suggestedQuantity": Recommended number to order.
-     - If the item has a standard full capacity or par level, calculate the difference to reach full.
-     - If low or empty, suggest a reasonable number to replenish.
-     - If plenty or full, suggestedQuantity MUST be 0.
-   - "reason": A short 1-sentence explanation of what you see (e.g. "Only 2 bottles visible standing, none in back row").
+CRITICAL RULES FOR 100% ACCURACY & ZERO GUESSWORK:
+1. PHOTO CLARITY CHECK FIRST:
+   - If the photo is too blurry, dark, shaky, obstructed, out-of-focus, or has severe glare preventing you from identifying labels or counting items accurately, set "photoQuality": "unclear" and describe the specific problem in "clarityIssue" (e.g. "Image has motion blur making sauce labels unreadable" or "Pantry is too dark to count bottles in crates").
+   - If the photo is sufficiently clear to inspect, set "photoQuality": "clear" and "clarityIssue": "".
+2. VISUAL GROUNDING WITH REFERENCE BENCHMARK PHOTOS:
+   - Carefully cross-reference the bottles, packets, labels, cap colors, branding logos, and pouch shapes in the CURRENT stock photo against each REFERENCE photo.
+   - Recognize that items may be standing upright, tilted, lying flat, stacked, or upside down. Use the reference angles to identify them in any orientation.
+   - Do NOT guess or hallucinate items that are not visible in the photo. If an item from the catalog is not visible in the current photo, set "level": "Not visible / Unknown" and "suggestedQuantity": 0.
+3. ACCURATE REORDER CALCULATION:
+   - Count visible remaining units.
+   - If an item has a "standard full capacity" (targetQuantity / par level), calculate replenishment: Math.max(0, targetQuantity - remainingCount).
+   - If an item is Empty (0 visible or crate empty), suggest its standard capacity or a reasonable replenish quantity.
+   - If an item is Plenty (>80% full), suggestedQuantity MUST be 0.
+4. REASONING:
+   - Provide a concise 1-sentence explanation of what you see (e.g., "Found 2 bottles standing and 1 lying down; 7 needed to reach par level of 10").
 
-Respond ONLY with a valid JSON array conforming to this exact schema:
-[
-  {
-    "id": "item id matching the catalog exactly",
-    "name": "item name",
-    "level": "Low (~20% left)",
-    "suggestedQuantity": 5,
-    "unit": "PIECES",
-    "reason": "Crate appears nearly empty."
-  }
-]`;
+Respond ONLY with a valid JSON object conforming to this exact schema:
+{
+  "photoQuality": "clear" or "unclear",
+  "clarityIssue": "" or "specific description of blur/darkness/glare",
+  "items": [
+    {
+      "id": "item id matching the catalog exactly",
+      "name": "item name",
+      "level": "Low (~20% left)" | "Empty" | "Half (~50% left)" | "Plenty (>80%)" | "Not visible / Unknown",
+      "suggestedQuantity": 5,
+      "unit": "PIECES",
+      "reason": "Visible count: 3 items (2 standing, 1 lying down)."
+    }
+  ]
+}`;
 
   const refList = (Array.isArray(referencePhotos) && referencePhotos.length)
     ? referencePhotos
@@ -150,17 +159,32 @@ Respond ONLY with a valid JSON array conforming to this exact schema:
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(activeKey)}`;
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.2,
-      },
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutTimer = setTimeout(() => controller.abort(), 16000);
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.1,
+          topP: 0.8,
+        },
+      }),
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('Analysis timed out. Please check your network connection and try again.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutTimer);
+  }
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
@@ -179,10 +203,22 @@ Respond ONLY with a valid JSON array conforming to this exact schema:
 
   try {
     const parsed = JSON.parse(textContent);
-    if (!Array.isArray(parsed)) {
-      throw new Error('Unexpected response format from Gemini.');
+    if (Array.isArray(parsed)) {
+      return {
+        isUnclear: false,
+        clarityIssue: '',
+        suggestions: parsed,
+      };
     }
-    return parsed;
+    if (parsed && typeof parsed === 'object') {
+      const isUnclear = parsed.photoQuality === 'unclear' || Boolean(parsed.clarityIssue && (!parsed.items || !parsed.items.length));
+      return {
+        isUnclear,
+        clarityIssue: parsed.clarityIssue || (isUnclear ? 'Photo is blurry or too dark to verify items with 100% accuracy.' : ''),
+        suggestions: Array.isArray(parsed.items) ? parsed.items : [],
+      };
+    }
+    throw new Error('Unexpected response format from Gemini.');
   } catch (err) {
     throw new Error(`Failed to parse AI analysis: ${err.message}`);
   }

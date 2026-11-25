@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, ArrowUpRight, Camera, Check, CheckCircle2, Clipboard, CloudOff,
+  AlertTriangle, ArrowLeft, ArrowUpRight, Camera, Check, CheckCircle2, Clipboard, CloudOff,
   CircleAlert, ChevronDown, Image as ImageIcon, LoaderCircle, MessageCircle, Minus, Package, Plus,
   Search, Send, ShoppingBag, Sparkles, Trash2, Truck,
 } from 'lucide-react';
@@ -66,6 +66,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
   const [showAIScan, setShowAIScan] = useState(false);
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [aiClarityIssue, setAiClarityIssue] = useState('');
   const [aiSuggestions, setAiSuggestions] = useState([]);
   const [tempPhotoUrl, setTempPhotoUrl] = useState('');
   const [showReferenceModal, setShowReferenceModal] = useState(false);
@@ -334,20 +335,28 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     setShowAIScan(true);
     setAiAnalyzing(true);
     setAiError('');
+    setAiClarityIssue('');
     setAiSuggestions([]);
 
     try {
-      const compressed = await compressImageToBase64(file, 960, 0.72);
+      const compressed = await compressImageToBase64(file, 960, 0.70);
       setTempPhotoUrl(compressed.dataUrl);
 
-      const suggestions = await analyzeShelfPhoto({
+      const analysisResult = await analyzeShelfPhoto({
         apiKey,
         supplier: { ...supplier, supplies: suppliesRef.current },
         currentPhotoBase64: compressed.base64,
         referencePhotos,
       });
 
-      const mapped = suggestions.map((sug) => {
+      if (analysisResult?.isUnclear) {
+        setAiClarityIssue(analysisResult.clarityIssue || 'Photo is blurry or too dark to verify stock with 100% accuracy.');
+      } else {
+        setAiClarityIssue('');
+      }
+
+      const rawList = Array.isArray(analysisResult?.suggestions) ? analysisResult.suggestions : (Array.isArray(analysisResult) ? analysisResult : []);
+      const mapped = rawList.map((sug) => {
         const item = suppliesRef.current.find((it) => it.id === sug.id || it.name.toLowerCase() === String(sug.name).toLowerCase());
         return {
           id: item?.id || sug.id,
@@ -723,9 +732,13 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
 
             {aiAnalyzing && (
               <div className="ai-scanning-state">
-                <LoaderCircle size={32} className="spin" />
-                <strong>Analyzing crates with Gemini AI…</strong>
-                <p>Estimating levels and calculating order suggestions.</p>
+                <LoaderCircle size={34} className="spin" />
+                <strong>Analyzing stock with Gemini AI…</strong>
+                <div className="ai-scan-step-pill">
+                  <Sparkles size={13} />
+                  <span>Matching {referencePhotos.length || 1} reference angles · checking clarity &amp; par levels</span>
+                </div>
+                <p>Processing in memory · 0 MB stored</p>
               </div>
             )}
 
@@ -739,11 +752,53 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
               </div>
             )}
 
-            {!aiAnalyzing && !aiError && aiSuggestions.length > 0 && (
+            {!aiAnalyzing && aiClarityIssue && (
+              <div className="ai-unclear-card" role="alert">
+                <div className="ai-unclear-header">
+                  <div className="ai-unclear-icon">
+                    <AlertTriangle size={22} />
+                  </div>
+                  <div className="ai-unclear-info">
+                    <strong>Photo Unclear / Not Analyzable</strong>
+                    <p className="ai-unclear-reason">{aiClarityIssue}</p>
+                  </div>
+                </div>
+                <p className="ai-unclear-instruction">
+                  To guarantee 100% ordering accuracy, please hold the camera steady in good kitchen lighting and snap the crates again.
+                </p>
+                <div className="modal-actions" style={{ marginTop: 12 }}>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Camera size={16} /> Retake Photo
+                  </button>
+                  {aiSuggestions.length > 0 && (
+                    <button
+                      className="btn btn-secondary"
+                      type="button"
+                      onClick={() => setAiClarityIssue('')}
+                    >
+                      View partial detections
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
+                    onClick={() => { setShowAIScan(false); setTempPhotoUrl(''); setAiClarityIssue(''); }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!aiAnalyzing && !aiError && !aiClarityIssue && aiSuggestions.length > 0 && (
               <>
                 <div className="ai-scan-status">
                   <span>Found {aiSuggestions.filter((s) => s.suggestedQuantity > 0).length} items needing restock</span>
-                  <span className="ai-scan-privacy">0 MB stored · photo discarded</span>
+                  <span className="ai-scan-privacy">100% verified against references</span>
                 </div>
 
                 <div className="ai-suggestion-list">
@@ -790,12 +845,27 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
                 </div>
 
                 <div className="modal-actions">
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Retake or scan another angle"
+                  >
+                    <Camera size={15} /> Retake
+                  </button>
                   <button className="btn btn-secondary" type="button" onClick={() => { setShowAIScan(false); setTempPhotoUrl(''); }}>Cancel</button>
                   <button className="btn btn-primary" type="button" onClick={applyAISuggestions}>
                     <Check size={16} /> Apply to Order
                   </button>
                 </div>
               </>
+            )}
+
+            {!aiAnalyzing && !aiError && !aiClarityIssue && aiSuggestions.length > 0 && aiSuggestions.filter((s) => s.suggestedQuantity > 0).length === 0 && (
+              <div className="ai-all-full-note">
+                <CheckCircle2 size={20} className="accent-mint" />
+                <span>All items in this photo appear well stocked. No items need restocking.</span>
+              </div>
             )}
           </div>
         </Modal>

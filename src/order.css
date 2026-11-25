@@ -187,7 +187,17 @@
 .ai-preview-thumb { width: 100%; max-height: 140px; object-fit: cover; border-radius: 14px; border: 1px solid var(--border); }
 .ai-scanning-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 32px 16px; text-align: center; color: var(--muted); }
 .ai-scanning-state strong { color: var(--text); font-size: 15px; }
-.ai-scanning-state p { margin: 0; font-size: 12px; color: var(--subtle); }
+.ai-scanning-state p { margin: 0; font-size: 11px; color: var(--subtle); }
+.ai-scan-step-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px; background: rgba(255, 23, 68, 0.1); border: 1px solid rgba(255, 23, 68, 0.25); color: var(--accent); font-size: 11px; font-weight: 600; }
+
+/* Unclear photo prompt */
+.ai-unclear-card { padding: 14px 16px; background: rgba(255, 152, 0, 0.08); border: 1px solid rgba(255, 152, 0, 0.35); border-radius: 16px; display: flex; flex-direction: column; gap: 10px; }
+.ai-unclear-header { display: flex; align-items: flex-start; gap: 12px; }
+.ai-unclear-icon { display: grid; place-items: center; width: 36px; height: 36px; min-width: 36px; border-radius: 10px; background: rgba(255, 152, 0, 0.16); color: #ff9800; border: 1px solid rgba(255, 152, 0, 0.3); }
+.ai-unclear-info strong { display: block; font-size: 14px; color: #ffb74d; margin-bottom: 2px; }
+.ai-unclear-reason { margin: 0; font-size: 12px; color: var(--text); line-height: 1.4; }
+.ai-unclear-instruction { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.5; padding-top: 4px; border-top: 1px solid rgba(255, 152, 0, 0.2); }
+.ai-all-full-note { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-radius: 12px; background: rgba(0, 230, 118, 0.06); border: 1px solid rgba(0, 230, 118, 0.25); color: var(--mint, #00e676); font-size: 12px; font-weight: 600; }
 .ai-scan-status { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; background: rgba(0,230,118,.07); border: 1px solid rgba(0,230,118,.25); border-radius: 12px; font-size: 11px; font-weight: 600; color: var(--mint, #00e676); }
 .ai-scan-privacy { font-size: 10px; color: var(--subtle); font-weight: normal; }
 .ai-suggestion-list { display: grid; gap: 10px; max-height: 48vh; overflow-y: auto; padding-right: 2px; }

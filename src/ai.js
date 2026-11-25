@@ -228,3 +228,162 @@ Respond ONLY with a valid JSON object conforming to this exact schema:
     throw new Error(`Failed to parse AI analysis: ${err.message}`);
   }
 }
+
+/**
+ * Analyze a photo of the whole kitchen rack/pantry and auto-route
+ * low items to their respective suppliers.
+ */
+export async function analyzeWholeRackPhoto({
+  apiKey, suppliers = [], currentPhotoBase64,
+}) {
+  const activeKey = apiKey || getStoredGeminiKey();
+  if (!activeKey) {
+    throw new Error('Please enter a Google Gemini API Key to use photo analysis.');
+  }
+
+  const validSuppliers = Array.isArray(suppliers) ? suppliers.filter((s) => Array.isArray(s.supplies) && s.supplies.length > 0) : [];
+  if (!validSuppliers.length) {
+    throw new Error('No supplier catalogs registered to analyze against.');
+  }
+
+  const catalogBreakdown = validSuppliers.map((sup) => {
+    const items = sup.supplies.map((it) => {
+      const target = it.targetQuantity ? ` (target full capacity: ${it.targetQuantity} ${it.unit})` : '';
+      return `    - Item ID: "${it.id}", Name: "${it.name}", Unit: "${it.unit}"${target}`;
+    }).join('\n');
+    return `SUPPLIER: "${sup.name}" (Supplier ID: "${sup.id}")\n${items}`;
+  }).join('\n\n');
+
+  const systemPrompt = `You are the master restaurant inventory AI specialist for "Red Lantern Restaurant".
+We are inspecting a single photo of the FULL KITCHEN STORAGE RACK / PANTRY SHELVES containing items from multiple different suppliers.
+
+REGISTERED SUPPLIERS AND THEIR CATALOGS:
+${catalogBreakdown}
+
+CRITICAL RULES FOR 100% ACCURATE WHOLE-RACK ROUTING:
+1. PHOTO CLARITY CHECK:
+   - If the photo is too blurry, dark, shaky, or unreadable to identify items, set "photoQuality": "unclear" and describe why in "clarityIssue".
+   - If sufficiently clear, set "photoQuality": "clear" and "clarityIssue": "".
+
+2. DEEP SCANNING ACROSS MULTIPLE CUBBIES & SHELVES:
+   - Overlapping / Piled Pouches: For spice masalas, dal pouches, and powders piled on shelves, scan through the layers. Match logos, header typography, and colored banners (e.g. Starzing Garam Masala, Cumin, Chinese Pepper, Kitchen King, Fortune Dal).
+   - Rows & Stacked Bottles: For sauces, vinegar, syrups, and essence bottles, inspect front rows, visible bottles in back rows, and any horizontal bottles lying on top of bottle caps.
+   - Separate Items by Supplier: For each item identified on the shelves, locate which supplier catalog it belongs to above.
+
+3. REORDER CALCULATION PER SUPPLIER:
+   - For each catalog item found in the photo, count visible remaining units.
+   - If an item has a "target full capacity" (par level), calculate replenishment needed: Math.max(0, targetQuantity - remainingCount).
+   - If an item is Empty (0 visible or shelf space empty), suggest replenishment.
+   - If an item is Plenty (>80% full / at par), suggestedQuantity MUST be 0.
+   - If an item from a supplier's catalog is not stored on this rack or not visible, set "suggestedQuantity": 0 and "level": "Not visible / Unknown".
+
+Respond ONLY with a valid JSON object conforming to this exact schema:
+{
+  "photoQuality": "clear" or "unclear",
+  "clarityIssue": "" or "description",
+  "suppliers": [
+    {
+      "supplierId": "matching supplier id exactly",
+      "supplierName": "supplier name",
+      "items": [
+        {
+          "id": "item id matching the supplier catalog",
+          "name": "item name",
+          "level": "Low (~20% left)" | "Empty" | "Half (~50% left)" | "Plenty (>80%)" | "Not visible / Unknown",
+          "suggestedQuantity": 8,
+          "unit": "PIECES",
+          "reason": "Visible count: 2 bottles on middle shelf; 8 needed to reach par of 10."
+        }
+      ]
+    }
+  ]
+}`;
+
+  const parts = [{ text: systemPrompt }];
+
+  // Include benchmark reference photos if suppliers have them
+  validSuppliers.forEach((sup) => {
+    const refs = Array.isArray(sup.referencePhotos) && sup.referencePhotos.length
+      ? sup.referencePhotos
+      : (sup.referencePhoto ? [sup.referencePhoto] : []);
+    if (refs.length > 0) {
+      parts.push({
+        text: `BENCHMARK REFERENCE PHOTOS for Supplier "${sup.name}":`,
+      });
+      refs.slice(0, 2).forEach((refImg, idx) => {
+        parts.push({ text: `${sup.name} reference photo ${idx + 1}:` });
+        parts.push({
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: refImg.replace(/^data:image\/[a-z]+;base64,/, ''),
+          },
+        });
+      });
+    }
+  });
+
+  parts.push({ text: 'CURRENT FULL RACK / PANTRY PHOTO (snapped in kitchen):' });
+  parts.push({
+    inlineData: {
+      mimeType: 'image/jpeg',
+      data: currentPhotoBase64.replace(/^data:image\/[a-z]+;base64,/, ''),
+    },
+  });
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(activeKey)}`;
+
+  const controller = new AbortController();
+  const timeoutTimer = setTimeout(() => controller.abort(), 20000);
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.1,
+          topP: 0.8,
+        },
+      }),
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('Analysis timed out. Please check your network connection and try again.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutTimer);
+  }
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    const message = errorBody?.error?.message || `Gemini API request failed (${response.status})`;
+    if (response.status === 400 && message.includes('API_KEY_INVALID')) {
+      throw new Error('Invalid Gemini API Key. Please verify your free key in AI Settings.');
+    }
+    throw new Error(message);
+  }
+
+  const result = await response.json();
+  const textContent = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!textContent) {
+    throw new Error('Gemini was unable to analyze the rack photo. Please try a clearer picture.');
+  }
+
+  try {
+    const parsed = JSON.parse(textContent);
+    const isUnclear = parsed.photoQuality === 'unclear';
+    const suppliersList = Array.isArray(parsed.suppliers) ? parsed.suppliers : [];
+    return {
+      isUnclear,
+      clarityIssue: parsed.clarityIssue || (isUnclear ? 'Photo is blurry or too dark to verify rack items with 100% accuracy.' : ''),
+      suppliers: suppliersList,
+    };
+  } catch (err) {
+    throw new Error(`Failed to parse AI analysis: ${err.message}`);
+  }
+}

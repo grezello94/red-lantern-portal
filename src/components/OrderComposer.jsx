@@ -43,6 +43,104 @@ function clearSavedBackup(key, supplies) {
   }
 }
 
+function AIVisionIcon({ size = 22, className = '' }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-hidden="true"
+    >
+      <defs>
+        <linearGradient id="rlAiCamGrad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#ff5252" />
+          <stop offset="100%" stopColor="#ff1744" />
+        </linearGradient>
+      </defs>
+      {/* Autofocus / Scanning Reticle Corners */}
+      <path d="M2.5 7V4.5A2 2 0 0 1 4.5 2.5H7" stroke="url(#rlAiCamGrad)" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M17 2.5h2.5a2 2 0 0 1 2 2V7" stroke="url(#rlAiCamGrad)" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M21.5 17v2.5a2 2 0 0 1-2 2H17" stroke="url(#rlAiCamGrad)" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M7 21.5H4.5a2 2 0 0 1-2-2V17" stroke="url(#rlAiCamGrad)" strokeWidth="1.9" strokeLinecap="round" />
+
+      {/* Camera Body */}
+      <path
+        d="M6.5 8.5h2.2l1.2-1.8h4.2l1.2 1.8h2.2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2z"
+        fill="rgba(255, 23, 68, 0.16)"
+        stroke="url(#rlAiCamGrad)"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+
+      {/* Optical Center Lens with Depth */}
+      <circle cx="12" cy="13.5" r="3.2" stroke="url(#rlAiCamGrad)" strokeWidth="1.6" fill="rgba(255, 23, 68, 0.3)" />
+      <circle cx="12" cy="13.5" r="1.3" fill="#ff5252" />
+
+      {/* AI Intelligence Sparkle */}
+      <path
+        d="M19 3.5l.4 1 1 .4-1 .4-.4 1-.4-1-1-.4 1-.4.4-1z"
+        fill="#00e676"
+      />
+    </svg>
+  );
+}
+
+function ReferenceStackIcon({ size = 20, className = '' }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-hidden="true"
+    >
+      {/* Back photo card tilted */}
+      <rect
+        x="6"
+        y="2.5"
+        width="14.5"
+        height="14.5"
+        rx="2.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeDasharray="2.5 1.5"
+        opacity="0.4"
+      />
+      {/* Front photo card */}
+      <rect
+        x="3"
+        y="6.5"
+        width="14.5"
+        height="14.5"
+        rx="2.5"
+        fill="currentColor"
+        fillOpacity="0.08"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      {/* Sun/Aperture circle */}
+      <circle cx="7.5" cy="11" r="1.5" fill="currentColor" fillOpacity="0.8" />
+      {/* Mountain silhouette */}
+      <path
+        d="M4.5 18l3.5-3.8 2.5 2.5 3-3.5 3 4.8H4.5z"
+        fill="currentColor"
+        fillOpacity="0.25"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+      {/* Multi-angle indicator pill badge on corner */}
+      <circle cx="19" cy="19" r="3" fill="#00e676" fillOpacity="0.25" stroke="#00e676" strokeWidth="1.2" />
+      <path d="M17.8 19l.8.8 1.6-1.6" stroke="#00e676" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export default function OrderComposer({ storeId, isAdmin, supplier, orderMessages = [], itemUnits = ITEM_UNITS, onBack, showToast }) {
   const draftKey = `red_lantern_draft_v1:${storeId}:${supplier.id}`;
   const [initialDraft] = useState(() => readDraftBackup(draftKey));
@@ -590,12 +688,15 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
               title="Snap crate or shelf photo to detect low stock"
             >
               <div className="ai-scan-icon-wrap">
-                <Camera size={20} />
+                <AIVisionIcon size={25} />
               </div>
               <div className="ai-scan-content">
                 <div className="ai-scan-title-row">
                   <strong>Scan Stock with AI</strong>
-                  <span className="ai-tag">FREE GEMINI</span>
+                  <span className="ai-tag">
+                    <Sparkles size={10} className="ai-tag-sparkle" />
+                    GEMINI AI
+                  </span>
                 </div>
                 <p className="ai-scan-subtitle">
                   Snap crates or shelves · auto-fills low items
@@ -611,7 +712,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
             >
               <div className="ai-ref-card-inner">
                 <div className="ai-ref-icon-bubble">
-                  <ImageIcon size={18} />
+                  <ReferenceStackIcon size={21} />
                 </div>
                 <div className="ai-ref-text-block">
                   <span className="ai-ref-label">Reference</span>

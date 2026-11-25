@@ -14,7 +14,13 @@ export const normalizeItemUnits = (units) => [...new Set([
 ])];
 export const normalizeSupplies = (supplies) => Array.isArray(supplies) ? supplies
   .filter((item) => typeof item?.name === 'string' && item.name.trim())
-  .map((item, index) => ({ ...item, id: item.id || `item-${index}`, quantity: Number.isFinite(Number(item.quantity)) ? Math.max(0, Number(item.quantity)) : 0, unit: normalizeItemUnit(item.unit) })) : [];
+  .map((item, index) => ({
+    ...item,
+    id: item.id || `item-${index}`,
+    quantity: Number.isFinite(Number(item.quantity)) ? Math.max(0, Number(item.quantity)) : 0,
+    unit: normalizeItemUnit(item.unit),
+    targetQuantity: Number.isFinite(Number(item.targetQuantity)) && Number(item.targetQuantity) > 0 ? Number(item.targetQuantity) : null,
+  })) : [];
 
 export function normalizeOrderMessages(messages) {
   if (!Array.isArray(messages)) return DEFAULT_ORDER_MESSAGES;

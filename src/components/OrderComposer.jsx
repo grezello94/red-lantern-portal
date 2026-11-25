@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, ArrowUpRight, Check, CheckCircle2, Clipboard, CloudOff,
+  ArrowLeft, ArrowUpRight, Camera, Check, CheckCircle2, Clipboard, CloudOff,
   CircleAlert, ChevronDown, LoaderCircle, MessageCircle, Minus, Package, Plus,
-  Search, Send, ShoppingBag, Trash2, Truck,
+  Search, Send, ShoppingBag, Sparkles, Trash2, Truck,
 } from 'lucide-react';
 import {
   formatOrderMessage, getVendorAssignedMessageIds, ITEM_UNITS, normalizeItemUnit,
   normalizeItemUnits, normalizeSupplies, updateSupplier,
 } from '../data.js';
 import { EmptyState, Field, Modal } from './ui.jsx';
+import {
+  analyzeShelfPhoto, compressImageToBase64, getStoredGeminiKey, saveStoredGeminiKey,
+} from '../ai.js';
 
 const displayQuantity = (quantity) => new Intl.NumberFormat('en-IN', { maximumFractionDigits: 4 }).format(quantity);
 
@@ -53,11 +56,26 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUnit, setNewUnit] = useState('PIECES');
+  const [newTargetQuantity, setNewTargetQuantity] = useState('');
   const [itemError, setItemError] = useState('');
   const [deleteItem, setDeleteItem] = useState(null);
   const [showClear, setShowClear] = useState(false);
   const [reviewMessage, setReviewMessage] = useState(null);
   const [copied, setCopied] = useState(false);
+
+  const [showAIScan, setShowAIScan] = useState(false);
+  const [aiAnalyzing, setAiAnalyzing] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiSuggestions, setAiSuggestions] = useState([]);
+  const [tempPhotoUrl, setTempPhotoUrl] = useState('');
+  const [showReferenceModal, setShowReferenceModal] = useState(false);
+  const [showKeyModal, setShowKeyModal] = useState(false);
+  const [keyInput, setKeyInput] = useState(() => getStoredGeminiKey());
+  const [savingReference, setSavingReference] = useState(false);
+  const [referencePhoto, setReferencePhoto] = useState(supplier.referencePhoto || null);
+
+  const fileInputRef = useRef(null);
+  const refInputRef = useRef(null);
 
   const suppliesRef = useRef(supplies);
   const dirtyRef = useRef(Boolean(initialDraft?.pending));
@@ -268,16 +286,128 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
       setItemError('An item with this name is already in the catalog.');
       return;
     }
+    const targetQty = Number(newTargetQuantity);
     changeSupplies((current) => [...current, {
-      id: `item-${crypto.randomUUID()}`, name, quantity: 0, unit: normalizeItemUnit(newUnit),
+      id: `item-${crypto.randomUUID()}`,
+      name,
+      quantity: 0,
+      unit: normalizeItemUnit(newUnit),
+      targetQuantity: Number.isFinite(targetQty) && targetQty > 0 ? targetQty : null,
     }]);
     setNewName('');
     setNewUnit('PIECES');
+    setNewTargetQuantity('');
     setItemError('');
     setShowAdd(false);
     setFilter('all');
     setQuery('');
     showToast?.('Item added to the catalog.');
+  };
+
+  const handleScanPhotoSelected = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    const apiKey = getStoredGeminiKey();
+    if (!apiKey) {
+      setShowKeyModal(true);
+      return;
+    }
+
+    setShowAIScan(true);
+    setAiAnalyzing(true);
+    setAiError('');
+    setAiSuggestions([]);
+
+    try {
+      const compressed = await compressImageToBase64(file, 960, 0.72);
+      setTempPhotoUrl(compressed.dataUrl);
+
+      const suggestions = await analyzeShelfPhoto({
+        apiKey,
+        supplier: { ...supplier, supplies: suppliesRef.current },
+        currentPhotoBase64: compressed.base64,
+        referencePhotoBase64: referencePhoto,
+      });
+
+      const mapped = suggestions.map((sug) => {
+        const item = suppliesRef.current.find((it) => it.id === sug.id || it.name.toLowerCase() === String(sug.name).toLowerCase());
+        return {
+          id: item?.id || sug.id,
+          name: item?.name || sug.name,
+          unit: item?.unit || sug.unit || 'PIECES',
+          level: sug.level || 'Low',
+          suggestedQuantity: Number.isFinite(Number(sug.suggestedQuantity)) ? Math.max(0, Number(sug.suggestedQuantity)) : 0,
+          reason: sug.reason || '',
+        };
+      });
+
+      setAiSuggestions(mapped);
+    } catch (err) {
+      setAiError(err.message || 'Failed to analyze shelf photo.');
+    } finally {
+      setAiAnalyzing(false);
+    }
+  };
+
+  const adjustAiSuggestionQty = (id, delta) => {
+    setAiSuggestions((prev) => prev.map((item) => {
+      if (item.id === id) {
+        return { ...item, suggestedQuantity: Math.max(0, Number((item.suggestedQuantity + delta).toFixed(2))) };
+      }
+      return item;
+    }));
+  };
+
+  const applyAISuggestions = () => {
+    aiSuggestions.forEach((sug) => {
+      if (sug.suggestedQuantity > 0) {
+        changeQuantity(sug.id, sug.suggestedQuantity);
+      }
+    });
+    setTempPhotoUrl('');
+    setAiSuggestions([]);
+    setShowAIScan(false);
+    showToast?.('AI order suggestions applied to draft.');
+  };
+
+  const handleReferencePhotoSelected = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setSavingReference(true);
+    try {
+      const compressed = await compressImageToBase64(file, 960, 0.72);
+      await updateSupplier(storeId, supplier.id, { referencePhoto: compressed.dataUrl });
+      supplier.referencePhoto = compressed.dataUrl;
+      setReferencePhoto(compressed.dataUrl);
+      showToast?.('Benchmark reference photo saved.');
+    } catch {
+      showToast?.('Failed to save reference photo.');
+    } finally {
+      setSavingReference(false);
+    }
+  };
+
+  const removeReferencePhoto = async () => {
+    setSavingReference(true);
+    try {
+      await updateSupplier(storeId, supplier.id, { referencePhoto: null });
+      delete supplier.referencePhoto;
+      setReferencePhoto(null);
+      showToast?.('Reference photo removed.');
+    } catch {
+      showToast?.('Failed to remove reference photo.');
+    } finally {
+      setSavingReference(false);
+    }
+  };
+
+  const saveApiKey = () => {
+    saveStoredGeminiKey(keyInput);
+    setShowKeyModal(false);
+    showToast?.('Gemini API key saved.');
   };
 
   const reviewOrder = () => {
@@ -368,11 +498,47 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
               <button className={filter === 'selected' ? 'active' : ''} aria-pressed={filter === 'selected'} onClick={() => setFilter('selected')}>Selected <span>{selectedItems.length}</span></button>
             </div>
           </div>
+
+          <div className="catalog-ai-banner">
+            <button className="btn btn-ai-scan" type="button" onClick={() => fileInputRef.current?.click()} title="Snap today's stock to suggest quantities">
+              <Camera size={17} />
+              <span>Scan crates with AI</span>
+            </button>
+            <button
+              className={`btn btn-reference-photo ${referencePhoto ? 'has-photo' : ''}`}
+              type="button"
+              onClick={() => setShowReferenceModal(true)}
+              title="View or update benchmark photo for this supplier"
+            >
+              <Sparkles size={15} />
+              <span>{referencePhoto ? 'Reference set' : 'Set reference'}</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: 'none' }}
+              onChange={handleScanPhotoSelected}
+            />
+            <input
+              ref={refInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: 'none' }}
+              onChange={handleReferencePhotoSelected}
+            />
+          </div>
+
           <div className="catalog-list">
             {visibleItems.map((item) => (
               <div className={`catalog-row ${item.quantity > 0 ? 'is-selected' : ''}`} key={item.id}>
                 <div className="item-card-heading">
-                  <h2 className="item-name">{item.name}</h2>
+                  <div className="item-name-group">
+                    <h2 className="item-name">{item.name}</h2>
+                    {Number(item.targetQuantity) > 0 && <span className="item-target-badge" title="Standard target capacity">Target: {item.targetQuantity} {item.unit}</span>}
+                  </div>
                   {isAdmin && <button className="icon-button item-delete" aria-label={`Delete ${item.name}`} onClick={() => setDeleteItem(item)}><Trash2 size={18} /></button>}
                 </div>
                 <div className="quantity-control">
@@ -421,6 +587,9 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
         <form onSubmit={addItem} className="modal-form">
           <Field label="Item name"><input autoFocus className="input" aria-label="Item name" placeholder="e.g. Fresh tomatoes" maxLength={120} required value={newName} onChange={(event) => { setNewName(event.target.value); setItemError(''); }} /></Field>
           <Field label="Order unit"><select className="input" aria-label="Order unit" value={newUnit} onChange={(event) => setNewUnit(event.target.value)}>{availableUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></Field>
+          <Field label="Standard full capacity / Par (optional)" hint="Standard full shelf amount. Helps AI suggest order quantities.">
+            <input className="input" type="number" inputMode="decimal" min="0" step="any" placeholder="e.g. 10" value={newTargetQuantity} onChange={(event) => setNewTargetQuantity(event.target.value)} />
+          </Field>
           {itemError && <p className="form-error" role="alert">{itemError}</p>}
           <div className="modal-actions"><button className="btn btn-secondary" type="button" onClick={() => setShowAdd(false)}>Cancel</button><button className="btn btn-primary" type="submit"><Plus size={16} /> Add item</button></div>
         </form>
@@ -428,6 +597,166 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
 
       {deleteItem && <Modal title="Remove catalog item?" description={`“${deleteItem.name}” will be removed from this supplier’s catalog and current draft.`} onClose={() => setDeleteItem(null)}><div className="modal-actions"><button className="btn btn-secondary" onClick={() => setDeleteItem(null)}>Keep item</button><button className="btn btn-primary" onClick={() => { changeSupplies((current) => current.filter((item) => item.id !== deleteItem.id)); setDeleteItem(null); }}>Remove item</button></div></Modal>}
       {showClear && <Modal title="Clear this draft?" description="All quantities will return to zero. Your catalog and order note will stay available." onClose={() => setShowClear(false)}><div className="modal-actions"><button className="btn btn-secondary" onClick={() => setShowClear(false)}>Keep draft</button><button className="btn btn-primary" onClick={() => { changeSupplies((current) => current.map((item) => ({ ...item, quantity: 0 }))); setQuantityDrafts({}); setShowClear(false); }}>Clear quantities</button></div></Modal>}
+
+      {showAIScan && (
+        <Modal
+          wide
+          title="AI Crate Scan"
+          description="Visual stock analysis. Photos are processed in memory and never saved to storage."
+          onClose={() => { if (!aiAnalyzing) { setShowAIScan(false); setTempPhotoUrl(''); } }}
+        >
+          <div className="ai-scan-modal">
+            {tempPhotoUrl && (
+              <div className="ai-scan-preview">
+                <img src={tempPhotoUrl} alt="Today's stock scan" className="ai-preview-thumb" />
+                <span className="badge badge-accent">Scanned just now · In-memory only</span>
+              </div>
+            )}
+
+            {aiAnalyzing && (
+              <div className="ai-scanning-state">
+                <LoaderCircle size={32} className="spin" />
+                <strong>Analyzing crates with Gemini AI…</strong>
+                <p>Estimating levels and calculating order suggestions.</p>
+              </div>
+            )}
+
+            {aiError && (
+              <div className="form-error-box" role="alert">
+                <p><strong>Analysis failed:</strong> {aiError}</p>
+                <div className="modal-actions">
+                  <button className="btn btn-secondary" type="button" onClick={() => setShowAIScan(false)}>Close</button>
+                  <button className="btn btn-primary" type="button" onClick={() => { setShowAIScan(false); setShowKeyModal(true); }}>Check AI Key</button>
+                </div>
+              </div>
+            )}
+
+            {!aiAnalyzing && !aiError && aiSuggestions.length > 0 && (
+              <>
+                <div className="ai-scan-status">
+                  <span>Found {aiSuggestions.filter((s) => s.suggestedQuantity > 0).length} items needing restock</span>
+                  <span className="ai-scan-privacy">0 MB stored · photo discarded</span>
+                </div>
+
+                <div className="ai-suggestion-list">
+                  {aiSuggestions.map((item) => {
+                    const levelStr = String(item.level || '').toLowerCase();
+                    const levelClass = levelStr.includes('empty')
+                      ? 'empty'
+                      : levelStr.includes('low')
+                        ? 'low'
+                        : levelStr.includes('half')
+                          ? 'half'
+                          : 'plenty';
+                    return (
+                      <div className={`ai-suggestion-card ${item.suggestedQuantity > 0 ? 'is-ordering' : ''}`} key={item.id}>
+                        <div className="ai-suggestion-header">
+                          <strong>{item.name}</strong>
+                          <span className={`ai-suggestion-badge ${levelClass}`}>{item.level}</span>
+                        </div>
+                        {item.reason && <p className="ai-suggestion-reason">{item.reason}</p>}
+                        <div className="ai-suggestion-control">
+                          <span>Order quantity ({item.unit}):</span>
+                          <div className="ai-stepper">
+                            <button
+                              type="button"
+                              aria-label={`Decrease suggested ${item.name}`}
+                              disabled={item.suggestedQuantity === 0}
+                              onClick={() => adjustAiSuggestionQty(item.id, -1)}
+                            >
+                              <Minus size={15} />
+                            </button>
+                            <span>{displayQuantity(item.suggestedQuantity)}</span>
+                            <button
+                              type="button"
+                              aria-label={`Increase suggested ${item.name}`}
+                              onClick={() => adjustAiSuggestionQty(item.id, 1)}
+                            >
+                              <Plus size={15} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="modal-actions">
+                  <button className="btn btn-secondary" type="button" onClick={() => { setShowAIScan(false); setTempPhotoUrl(''); }}>Cancel</button>
+                  <button className="btn btn-primary" type="button" onClick={applyAISuggestions}>
+                    <Check size={16} /> Apply to Order
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {showReferenceModal && (
+        <Modal
+          title="Benchmark Reference Photo"
+          description="Shows how this supplier's crates/shelves look when fully stocked. AI uses this as the benchmark."
+          onClose={() => setShowReferenceModal(false)}
+        >
+          <div className="reference-modal-content">
+            {referencePhoto ? (
+              <div className="reference-photo-view">
+                <img src={referencePhoto} alt="Supplier benchmark" className="reference-preview-image" />
+                <p className="reference-photo-hint">This benchmark photo is kept in storage so the AI knows what a full shelf looks like for {supplier.name}.</p>
+                <div className="modal-actions">
+                  <button className="btn btn-secondary" type="button" disabled={savingReference} onClick={() => refInputRef.current?.click()}>
+                    <Camera size={16} /> {savingReference ? 'Saving…' : 'Update photo'}
+                  </button>
+                  <button className="btn btn-danger" type="button" disabled={savingReference} onClick={removeReferencePhoto}>
+                    <Trash2 size={16} /> Remove
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <EmptyState
+                icon={Camera}
+                title="No reference photo set"
+                description={`Take a picture of ${supplier.name}'s crates or shelf when fully stocked. AI will use it as the benchmark to calculate how much to reorder.`}
+                action={
+                  <button className="btn btn-primary" type="button" disabled={savingReference} onClick={() => refInputRef.current?.click()}>
+                    <Camera size={16} /> {savingReference ? 'Compressing & saving…' : 'Snap reference photo'}
+                  </button>
+                }
+              />
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {showKeyModal && (
+        <Modal
+          title="Google Gemini AI Key"
+          description="Visual stock scanning uses Google Gemini Vision (100% free with 1,500 scans/day)."
+          onClose={() => setShowKeyModal(false)}
+        >
+          <div className="ai-key-modal">
+            <Field label="Gemini API Key" hint="Stored in this browser. Never shared or sold.">
+              <input
+                className="input"
+                type="password"
+                placeholder="AIzaSy..."
+                value={keyInput}
+                onChange={(event) => setKeyInput(event.target.value)}
+              />
+            </Field>
+            <p className="field-hint" style={{ marginTop: 8 }}>
+              Get your free key in 10 seconds: <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>Google AI Studio (free) <ArrowUpRight size={13} style={{ display: 'inline', verticalAlign: 'middle' }} /></a>
+            </p>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button className="btn btn-secondary" type="button" onClick={() => setShowKeyModal(false)}>Cancel</button>
+              <button className="btn btn-primary" type="button" disabled={!keyInput.trim()} onClick={saveApiKey}>
+                <Check size={16} /> Save Key
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {reviewMessage !== null && (
         <Modal

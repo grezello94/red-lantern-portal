@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { MessageSquareText, ArrowUpRight, Sun, Moon, LogOut, ChevronRight, Menu, X, RefreshCw, Check, CircleAlert, Plus, Trash2, Save, Store, ShoppingBag, ArrowLeft, Copy, Ruler } from 'lucide-react';
+import { MessageSquareText, ArrowUpRight, Sun, Moon, LogOut, ChevronRight, Menu, X, RefreshCw, Check, CircleAlert, Plus, Trash2, Save, Store, ShoppingBag, ArrowLeft, Copy, Ruler, Sparkles } from 'lucide-react';
 import LoginScreen from './components/LoginScreen';
 import SupplierDashboard from './components/SupplierDashboard';
 import OrderComposer from './components/OrderComposer';
 import OrderUnitSettings from './components/OrderUnitSettings';
 import { BrandMark, Field, Modal } from './components/ui';
 import { DEFAULT_ORDER_MESSAGES, ITEM_UNITS, normalizeItemUnits, normalizeOrderMessages, getVendorAssignedMessageIds, subscribeStore, subscribeSuppliers, saveStore, updateSupplier } from './data';
+import { getStoredGeminiKey, saveStoredGeminiKey } from './ai';
 
 export default function App() {
   const [storeId, setStoreId] = useState(() => localStorage.getItem('store_id'));
@@ -20,6 +21,8 @@ export default function App() {
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const [showMenu, setShowMenu] = useState(false);
+  const [showAISettings, setShowAISettings] = useState(false);
+  const [aiKeyInput, setAiKeyInput] = useState(() => getStoredGeminiKey());
   const [toast, setToast] = useState('');
   const toastTimer = useRef(null);
   const directoryScroll = useRef(0);
@@ -162,9 +165,39 @@ export default function App() {
           <div className="settings-store-code"><span>YOUR STORE CODE</span><div><code>{storeId}</code><button className="icon-button" onClick={copyCode} aria-label="Copy store code"><Copy size={18}/></button></div><p>Share this code with your team to prepare orders together.</p></div>
           {isAdmin && <button className="settings-menu-row" onClick={openMessages}><span className="settings-menu-icon"><MessageSquareText size={21}/></span><span><strong>Order messages</strong><small>Delivery instructions for each supplier</small></span><ChevronRight size={19}/></button>}
           {isAdmin && <button className="settings-menu-row" onClick={openUnits}><span className="settings-menu-icon"><Ruler size={21}/></span><span><strong>Order units</strong><small>Add units like CASE, BOTTLE, or PACK</small></span><ChevronRight size={19}/></button>}
+          {isAdmin && <button className="settings-menu-row" onClick={() => { setShowMenu(false); setShowAISettings(true); }}><span className="settings-menu-icon"><Sparkles size={21}/></span><span><strong>AI Vision Settings</strong><small>Google Gemini API Key (100% free)</small></span><ChevronRight size={19}/></button>}
           <button className="btn btn-danger sign-out-button" onClick={logout}><LogOut size={18}/>Sign out</button>
         </div>
       </Modal>}
+
+      {showAISettings && (
+        <Modal
+          title="Google Gemini AI Vision"
+          description="Visual crate scanning uses Google Gemini Vision. 100% free with up to 1,500 daily requests."
+          onClose={() => setShowAISettings(false)}
+        >
+          <div className="ai-key-modal">
+            <Field label="Gemini API Key" hint="Stored securely in this browser. Never shared or sold.">
+              <input
+                className="input"
+                type="password"
+                placeholder="AIzaSy..."
+                value={aiKeyInput}
+                onChange={(event) => setAiKeyInput(event.target.value)}
+              />
+            </Field>
+            <p className="field-hint" style={{ marginTop: 8 }}>
+              Get your free key in 10 seconds: <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>Google AI Studio (free) <ArrowUpRight size={13} style={{ display: 'inline', verticalAlign: 'middle' }} /></a>
+            </p>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button className="btn btn-secondary" type="button" onClick={() => setShowAISettings(false)}>Cancel</button>
+              <button className="btn btn-primary" type="button" onClick={() => { saveStoredGeminiKey(aiKeyInput); setShowAISettings(false); showToast('Gemini API Key saved'); }}>
+                <Check size={16} /> Save Key
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {toast && <div className="toast" role="status"><Check size={17}/><span>{toast}</span><button className="icon-button" onClick={() => setToast('')} aria-label="Dismiss notification"><X size={16}/></button></div>}
     </div>

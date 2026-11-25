@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft, ArrowUpRight, Camera, Check, CheckCircle2, Clipboard, CloudOff,
-  CircleAlert, ChevronDown, LoaderCircle, MessageCircle, Minus, Package, Plus,
+  CircleAlert, ChevronDown, Image as ImageIcon, LoaderCircle, MessageCircle, Minus, Package, Plus,
   Search, Send, ShoppingBag, Sparkles, Trash2, Truck,
 } from 'lucide-react';
 import {
@@ -72,10 +72,16 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [keyInput, setKeyInput] = useState(() => getStoredGeminiKey());
   const [savingReference, setSavingReference] = useState(false);
-  const [referencePhoto, setReferencePhoto] = useState(supplier.referencePhoto || null);
+  const [referencePhotos, setReferencePhotos] = useState(() => {
+    if (Array.isArray(supplier.referencePhotos)) return supplier.referencePhotos;
+    if (supplier.referencePhoto) return [supplier.referencePhoto];
+    return [];
+  });
 
   const fileInputRef = useRef(null);
   const refInputRef = useRef(null);
+  const refReplaceInputRef = useRef(null);
+  const targetReplaceIndexRef = useRef(null);
 
   const suppliesRef = useRef(supplies);
   const dirtyRef = useRef(Boolean(initialDraft?.pending));
@@ -114,6 +120,16 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
       document.removeEventListener('visibilitychange', stopAdjustPress);
     };
   }, [stopAdjustPress]);
+
+  useEffect(() => {
+    if (Array.isArray(supplier.referencePhotos)) {
+      setReferencePhotos(supplier.referencePhotos);
+    } else if (supplier.referencePhoto) {
+      setReferencePhotos([supplier.referencePhoto]);
+    } else {
+      setReferencePhotos([]);
+    }
+  }, [supplier.referencePhotos, supplier.referencePhoto]);
 
   useEffect(() => { toastRef.current = showToast; }, [showToast]);
 
@@ -328,7 +344,7 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
         apiKey,
         supplier: { ...supplier, supplies: suppliesRef.current },
         currentPhotoBase64: compressed.base64,
-        referencePhotoBase64: referencePhoto,
+        referencePhotos,
       });
 
       const mapped = suggestions.map((sug) => {
@@ -376,13 +392,22 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
+    if (referencePhotos.length >= 4) {
+      showToast?.('Maximum 4 reference angles reached. Delete an existing angle to add a new one.');
+      return;
+    }
     setSavingReference(true);
     try {
-      const compressed = await compressImageToBase64(file, 960, 0.72);
-      await updateSupplier(storeId, supplier.id, { referencePhoto: compressed.dataUrl });
-      supplier.referencePhoto = compressed.dataUrl;
-      setReferencePhoto(compressed.dataUrl);
-      showToast?.('Benchmark reference photo saved.');
+      const compressed = await compressImageToBase64(file, 880, 0.68);
+      const updatedList = [...referencePhotos, compressed.dataUrl];
+      await updateSupplier(storeId, supplier.id, {
+        referencePhotos: updatedList,
+        referencePhoto: updatedList[0] || null,
+      });
+      supplier.referencePhotos = updatedList;
+      supplier.referencePhoto = updatedList[0] || null;
+      setReferencePhotos(updatedList);
+      showToast?.(`Reference angle #${updatedList.length} of 4 saved.`);
     } catch {
       showToast?.('Failed to save reference photo.');
     } finally {
@@ -390,15 +415,64 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
     }
   };
 
-  const removeReferencePhoto = async () => {
+  const handleReplacePhotoSelected = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    const idx = targetReplaceIndexRef.current;
+    if (!file || idx === null || idx === undefined || idx < 0 || idx >= referencePhotos.length) return;
     setSavingReference(true);
     try {
-      await updateSupplier(storeId, supplier.id, { referencePhoto: null });
-      delete supplier.referencePhoto;
-      setReferencePhoto(null);
-      showToast?.('Reference photo removed.');
+      const compressed = await compressImageToBase64(file, 880, 0.68);
+      const updatedList = [...referencePhotos];
+      updatedList[idx] = compressed.dataUrl;
+      await updateSupplier(storeId, supplier.id, {
+        referencePhotos: updatedList,
+        referencePhoto: updatedList[0] || null,
+      });
+      supplier.referencePhotos = updatedList;
+      supplier.referencePhoto = updatedList[0] || null;
+      setReferencePhotos(updatedList);
+      showToast?.(`Reference angle #${idx + 1} updated with new photo.`);
+    } catch {
+      showToast?.('Failed to update reference photo.');
+    } finally {
+      setSavingReference(false);
+      targetReplaceIndexRef.current = null;
+    }
+  };
+
+  const removeReferencePhotoAtIndex = async (indexToRemove) => {
+    setSavingReference(true);
+    try {
+      const updatedList = referencePhotos.filter((_, idx) => idx !== indexToRemove);
+      await updateSupplier(storeId, supplier.id, {
+        referencePhotos: updatedList,
+        referencePhoto: updatedList[0] || null,
+      });
+      supplier.referencePhotos = updatedList;
+      supplier.referencePhoto = updatedList[0] || null;
+      setReferencePhotos(updatedList);
+      showToast?.(`Reference angle removed (${updatedList.length}/4 remaining).`);
     } catch {
       showToast?.('Failed to remove reference photo.');
+    } finally {
+      setSavingReference(false);
+    }
+  };
+
+  const clearAllReferencePhotos = async () => {
+    setSavingReference(true);
+    try {
+      await updateSupplier(storeId, supplier.id, {
+        referencePhotos: [],
+        referencePhoto: null,
+      });
+      supplier.referencePhotos = [];
+      delete supplier.referencePhoto;
+      setReferencePhotos([]);
+      showToast?.('All reference photos cleared. You can now snap new angles.');
+    } catch {
+      showToast?.('Failed to clear reference photos.');
     } finally {
       setSavingReference(false);
     }
@@ -500,19 +574,45 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
           </div>
 
           <div className="catalog-ai-banner">
-            <button className="btn btn-ai-scan" type="button" onClick={() => fileInputRef.current?.click()} title="Snap today's stock to suggest quantities">
-              <Camera size={17} />
-              <span>Scan crates with AI</span>
-            </button>
             <button
-              className={`btn btn-reference-photo ${referencePhoto ? 'has-photo' : ''}`}
+              className="ai-scan-card-btn"
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title="Snap crate or shelf photo to detect low stock"
+            >
+              <div className="ai-scan-icon-wrap">
+                <Camera size={20} />
+              </div>
+              <div className="ai-scan-content">
+                <div className="ai-scan-title-row">
+                  <strong>Scan Stock with AI</strong>
+                  <span className="ai-tag">FREE GEMINI</span>
+                </div>
+                <p className="ai-scan-subtitle">
+                  Snap crates or shelves · auto-fills low items
+                </p>
+              </div>
+            </button>
+
+            <button
+              className={`ai-ref-card-btn ${referencePhotos.length > 0 ? 'is-configured' : ''}`}
               type="button"
               onClick={() => setShowReferenceModal(true)}
-              title="View or update benchmark photo for this supplier"
+              title="Manage 3-4 benchmark reference photos (standing, laying, tilted)"
             >
-              <Sparkles size={15} />
-              <span>{referencePhoto ? 'Reference set' : 'Set reference'}</span>
+              <div className="ai-ref-card-inner">
+                <div className="ai-ref-icon-bubble">
+                  <ImageIcon size={18} />
+                </div>
+                <div className="ai-ref-text-block">
+                  <span className="ai-ref-label">Reference</span>
+                  <span className="ai-ref-pill">
+                    {referencePhotos.length > 0 ? `${referencePhotos.length}/4 angles` : '0/4 set'}
+                  </span>
+                </div>
+              </div>
             </button>
+
             <input
               ref={fileInputRef}
               type="file"
@@ -528,6 +628,14 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
               capture="environment"
               style={{ display: 'none' }}
               onChange={handleReferencePhotoSelected}
+            />
+            <input
+              ref={refReplaceInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: 'none' }}
+              onChange={handleReplacePhotoSelected}
             />
           </div>
 
@@ -695,36 +803,114 @@ export default function OrderComposer({ storeId, isAdmin, supplier, orderMessage
 
       {showReferenceModal && (
         <Modal
-          title="Benchmark Reference Photo"
-          description="Shows how this supplier's crates/shelves look when fully stocked. AI uses this as the benchmark."
+          wide
+          title="Supplier Reference Benchmark"
+          description={`Teach AI how ${supplier.name}'s items look when full. Capture 3 to 4 angles (e.g. standing upright, lying flat, tilted, or stacked in crates).`}
           onClose={() => setShowReferenceModal(false)}
         >
-          <div className="reference-modal-content">
-            {referencePhoto ? (
-              <div className="reference-photo-view">
-                <img src={referencePhoto} alt="Supplier benchmark" className="reference-preview-image" />
-                <p className="reference-photo-hint">This benchmark photo is kept in storage so the AI knows what a full shelf looks like for {supplier.name}.</p>
-                <div className="modal-actions">
-                  <button className="btn btn-secondary" type="button" disabled={savingReference} onClick={() => refInputRef.current?.click()}>
-                    <Camera size={16} /> {savingReference ? 'Saving…' : 'Update photo'}
-                  </button>
-                  <button className="btn btn-danger" type="button" disabled={savingReference} onClick={removeReferencePhoto}>
-                    <Trash2 size={16} /> Remove
-                  </button>
+          <div className="reference-modal-wrap">
+            <div className="reference-status-card">
+              <div className="reference-status-info">
+                <div className="reference-count-badge">
+                  <Sparkles size={14} />
+                  <span>{referencePhotos.length} of 4 angles saved</span>
                 </div>
+                <p className="reference-status-tip">
+                  {referencePhotos.length === 0 && '⚠️ No benchmark photos yet. Add 3-4 photos showing packets standing, lying flat, and crate views.'}
+                  {referencePhotos.length > 0 && referencePhotos.length < 3 && 'Good start! Add 1-2 more angles (e.g. packets lying flat or tilted) for optimal accuracy.'}
+                  {referencePhotos.length >= 3 && '✅ Optimal reference set. AI can recognize items whether standing upright or lying flat.'}
+                </p>
               </div>
-            ) : (
-              <EmptyState
-                icon={Camera}
-                title="No reference photo set"
-                description={`Take a picture of ${supplier.name}'s crates or shelf when fully stocked. AI will use it as the benchmark to calculate how much to reorder.`}
-                action={
-                  <button className="btn btn-primary" type="button" disabled={savingReference} onClick={() => refInputRef.current?.click()}>
-                    <Camera size={16} /> {savingReference ? 'Compressing & saving…' : 'Snap reference photo'}
-                  </button>
-                }
-              />
-            )}
+              {referencePhotos.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-small reference-clear-all"
+                  disabled={savingReference}
+                  onClick={clearAllReferencePhotos}
+                  title="Delete all reference photos (useful when packaging or bottles change)"
+                >
+                  <Trash2 size={13} />
+                  <span>Reset all</span>
+                </button>
+              )}
+            </div>
+
+            <div className="reference-grid">
+              {referencePhotos.map((photoUrl, index) => (
+                <div className="reference-card" key={index}>
+                  <div className="reference-img-container">
+                    <img src={photoUrl} alt={`Reference angle ${index + 1}`} className="reference-thumbnail" />
+                    <div className="reference-card-overlay">
+                      <span className="reference-angle-tag">Angle #{index + 1}</span>
+                      <button
+                        type="button"
+                        className="icon-button reference-delete-btn"
+                        title="Delete this angle"
+                        disabled={savingReference}
+                        onClick={() => removeReferencePhotoAtIndex(index)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="reference-card-footer">
+                    <span className="reference-angle-hint">
+                      {index === 0 ? 'Front / Standing' : index === 1 ? 'Lying flat / Side' : index === 2 ? 'Crate / Shelf view' : 'Alternate view'}
+                    </span>
+                    <button
+                      type="button"
+                      className="reference-retake-btn"
+                      disabled={savingReference}
+                      onClick={() => {
+                        targetReplaceIndexRef.current = index;
+                        refReplaceInputRef.current?.click();
+                      }}
+                    >
+                      Change
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {referencePhotos.length < 4 && (
+                <button
+                  type="button"
+                  className="reference-add-slot"
+                  disabled={savingReference}
+                  onClick={() => refInputRef.current?.click()}
+                >
+                  <div className="reference-add-icon">
+                    {savingReference ? <LoaderCircle size={22} className="spin" /> : <Plus size={24} />}
+                  </div>
+                  <strong>Add Angle #{referencePhotos.length + 1}</strong>
+                  <span>
+                    {referencePhotos.length === 0
+                      ? 'Standing upright'
+                      : referencePhotos.length === 1
+                        ? 'Lying flat / tilted'
+                        : referencePhotos.length === 2
+                          ? 'Crate / shelf view'
+                          : 'Alternate angle'}
+                  </span>
+                </button>
+              )}
+            </div>
+
+            <div className="reference-package-hint">
+              <Sparkles size={16} className="accent-icon" />
+              <div>
+                <strong>Packets or bottle design changed?</strong>
+                <p>
+                  Whenever a brand changes their bottle shape, pouch, or label, simply tap the trash icon on the old photo (or tap &ldquo;Change&rdquo;) to snap the new one. AI will instantly switch to the new benchmark!
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: 10 }}>
+              <button className="btn btn-primary" type="button" onClick={() => setShowReferenceModal(false)}>
+                <Check size={16} /> Done
+              </button>
+            </div>
           </div>
         </Modal>
       )}

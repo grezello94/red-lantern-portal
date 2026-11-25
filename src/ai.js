@@ -72,7 +72,9 @@ export async function compressImageToBase64(file, maxDimension = 960, quality = 
  * Analyze today's stock photo against catalog & reference photo using Google Gemini Vision.
  * Today's photo is processed in memory and NEVER saved or uploaded to the database.
  */
-export async function analyzeShelfPhoto({ apiKey, supplier, currentPhotoBase64, referencePhotoBase64 = null }) {
+export async function analyzeShelfPhoto({
+  apiKey, supplier, currentPhotoBase64, referencePhotos = [], referencePhotoBase64 = null,
+}) {
   const activeKey = apiKey || getStoredGeminiKey();
   if (!activeKey) {
     throw new Error('Please enter a Google Gemini API Key to use photo analysis.');
@@ -95,15 +97,15 @@ Registered items in this supplier catalog:
 ${catalogSummary}
 
 Your mission:
-1. Examine the provided "Current Stock Photo" of the crates/shelf/pantry.
-2. If a "Reference Photo" (showing full stock) is also provided, compare today's image against how the crates look when fully stocked.
+1. Examine the provided "Current Stock Photo" of the crates/shelf/pantry. Notice that bottles or packets may be standing upright, tilted, lying flat, stacked, or grouped.
+2. If "Reference Photos" are provided (showing items from different angles or orientations like standing upright vs lying flat or in crates), use them as the visual benchmark. These benchmark photos show how items look in real restaurant conditions (e.g. sauce pouches lying on their side, bottles seen from the cap or label).
 3. For each catalog item, determine:
    - "level": One of "Empty", "Low (~20% left)", "Half (~50% left)", "Plenty (>80%)", or "Not visible / Unknown".
    - "suggestedQuantity": Recommended number to order.
      - If the item has a standard full capacity or par level, calculate the difference to reach full.
-     - If low or empty, suggest a reasonable whole or decimal number to replenish.
+     - If low or empty, suggest a reasonable number to replenish.
      - If plenty or full, suggestedQuantity MUST be 0.
-   - "reason": A short 1-sentence explanation of what you see in the crates (e.g. "Only 2 onions visible at bottom of blue crate").
+   - "reason": A short 1-sentence explanation of what you see (e.g. "Only 2 bottles visible standing, none in back row").
 
 Respond ONLY with a valid JSON array conforming to this exact schema:
 [
@@ -112,20 +114,29 @@ Respond ONLY with a valid JSON array conforming to this exact schema:
     "name": "item name",
     "level": "Low (~20% left)",
     "suggestedQuantity": 5,
-    "unit": "KG",
+    "unit": "PIECES",
     "reason": "Crate appears nearly empty."
   }
 ]`;
 
+  const refList = (Array.isArray(referencePhotos) && referencePhotos.length)
+    ? referencePhotos
+    : (referencePhotoBase64 ? [referencePhotoBase64] : []);
+
   const parts = [{ text: systemPrompt }];
 
-  if (referencePhotoBase64) {
-    parts.push({ text: 'REFERENCE PHOTO (shows how the crates/shelf look when fully stocked):' });
+  if (refList.length > 0) {
     parts.push({
-      inlineData: {
-        mimeType: 'image/jpeg',
-        data: referencePhotoBase64.replace(/^data:image\/[a-z]+;base64,/, ''),
-      },
+      text: `REFERENCE BENCHMARK PHOTOS (${refList.length} photos showing how items look when stocked, from different angles or standing/laying states):`,
+    });
+    refList.forEach((refImg, index) => {
+      parts.push({ text: `Reference photo ${index + 1} of ${refList.length}:` });
+      parts.push({
+        inlineData: {
+          mimeType: 'image/jpeg',
+          data: refImg.replace(/^data:image\/[a-z]+;base64,/, ''),
+        },
+      });
     });
   }
 
